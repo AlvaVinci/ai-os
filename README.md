@@ -64,6 +64,7 @@ Read more:
 - [Architecture](docs/architecture.md)
 - [Capability policy](docs/capability-policy.md)
 - [Approval grants](docs/approval-grants.md)
+- [Tool adapter](docs/tool-adapter.md)
 - [MVP specification](docs/mvp-spec.md)
 - [Roadmap](docs/roadmap.md)
 
@@ -96,13 +97,14 @@ Implemented:
 - policy-bound approval lifecycle with exact operation matching and audit events
 - approval invalidation on denial, expiration, cancellation, and terminal Task states
 - guarded adapter execution with complete-operation retention across approval
+- bounded in-process Tool Catalog and Handler adapter without shell execution
 
 Not implemented yet:
 
 - operating-system enforcement of capabilities
-- principal-separated approval API and concrete operating-system adapters
+- principal-separated approval API and operating-system isolation adapters
 - persistent Task input and resumable execution recovery
-- model and tool execution
+- model execution and out-of-process Tool isolation
 - resource usage enforcement and monitoring
 
 ## Development
