@@ -37,6 +37,7 @@ Run Tasks safely on one Linux device.
 - [x] Approval audit events, cancellation invalidation, and timeout enforcement.
 - [x] Approval-aware in-process execution gate with complete-operation retention.
 - [x] Bounded in-process Tool Catalog and Handler adapter without shell execution.
+- [x] Bounded child-process Tool handler with explicit executable, argument policy, clean environment, and direct-child timeout.
 - [ ] Principal-separated approval API.
 - [ ] Operating-system enforcement and isolation adapters for filesystem, network, and out-of-process Tools.
 - [ ] One local model adapter.

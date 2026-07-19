@@ -4,15 +4,16 @@
 
 Draft. The architecture will evolve from MVP implementation and measurement.
 
-The repository currently contains five crates:
+The repository currently contains six crates:
 
+- `aios-adapter-process`: bounded child-process Tool handler with explicit executable configuration
 - `aios-adapter-tool`: bounded catalog and in-process handler execution behind `ExecutionGate`
 - `aios-core`: Task contracts, validation, stable error codes, and lifecycle states
 - `aios-local-api`: bounded Unix-socket protocol and the experimental `aiosd` daemon
 - `aios-runtime`: synchronous task supervision and a bounded in-memory event store
 - `aios-storage-sqlite`: persistent audit events and event-derived Task state recovery
 
-The Tool Adapter can invoke explicitly registered in-process handlers. No crate starts model processes or provides operating-system isolation yet. The remaining crates define the trust boundary that future execution components must satisfy.
+The Tool Adapter can invoke explicitly registered in-process handlers, including the bounded child-process handler. The Process Adapter starts only a trusted, fixed executable with validated arguments and a cleared environment. It is not an operating-system sandbox, and no crate provides complete process isolation yet. The remaining crates define the trust boundary that future execution components must satisfy.
 
 ## System overview
 
@@ -109,6 +110,17 @@ The gate is an in-process authorization boundary, not an operating-system sandbo
 - Returns stable errors without route, argument, handler, or output values.
 
 The current adapter executes trusted in-process handlers only. Handler-specific validation, timeouts, partial-side-effect idempotency, and sensitive output handling remain handler responsibilities. See [Tool adapter](tool-adapter.md).
+
+### Process Adapter
+
+- Executes one canonical absolute executable configured by trusted startup code.
+- Requires a trusted policy to approve every dynamic argument vector.
+- Bounds fixed and dynamic arguments and fixed environment values.
+- Clears ambient environment variables and nulls standard input, output, and error.
+- Uses an explicit canonical working directory and never invokes a shell or searches `PATH`.
+- Applies a bounded timeout to the direct child and returns redacted failure categories.
+
+The current Process Adapter is a constrained `ToolHandler`, not a sandbox. It does not separate OS principals, close every inherited non-standard descriptor, restrict filesystem or network access, apply namespaces or cgroups, or guarantee termination of descendants. Process output is deliberately discarded until bounded streaming and descendant cleanup can be enforced together. See [Process adapter](process-adapter.md).
 
 ### Model Router
 

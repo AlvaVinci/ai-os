@@ -67,6 +67,7 @@ Read more:
 - [Capability policy](docs/capability-policy.md)
 - [Approval grants](docs/approval-grants.md)
 - [Tool adapter](docs/tool-adapter.md)
+- [Process adapter](docs/process-adapter.md)
 - [Architecture decisions](docs/adr/README.md)
 - [MVP specification](docs/mvp-spec.md)
 - [Roadmap](docs/roadmap.md)
@@ -102,13 +103,14 @@ Implemented:
 - approval invalidation on denial, expiration, cancellation, and terminal Task states
 - guarded adapter execution with complete-operation retention across approval
 - bounded in-process Tool Catalog and Handler adapter without shell execution
+- bounded child-process Tool handler with explicit executable identity, argument policy, clean environment, and direct-child timeout
 
 Not implemented yet:
 
 - operating-system enforcement of capabilities
 - principal-separated approval API and operating-system isolation adapters
 - persistent Task input and resumable execution recovery
-- model execution and out-of-process Tool isolation
+- model execution and isolated out-of-process Tool execution
 - resource usage enforcement and monitoring
 
 ## Development
