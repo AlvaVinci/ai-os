@@ -142,6 +142,8 @@ submitted -> validating -> queued -> running -> succeeded
 
 ### Security and privacy
 
+The [Threat Model](threat-model.md) tracks concrete threats and release blockers. The [Capability Model](capability-model.md) defines the normative authority and enforcement rules.
+
 - External network access is denied by default.
 - Allowed network destinations are explicit lowercase host names or IP addresses without schemes, paths, or ports.
 - Filesystem scopes match only the normalized path itself or a descendant separated by `/`; string-prefix siblings do not match.

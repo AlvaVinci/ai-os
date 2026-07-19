@@ -62,9 +62,12 @@ Read more:
 
 - [Vision](docs/vision.md)
 - [Architecture](docs/architecture.md)
+- [Threat model](docs/threat-model.md)
+- [Capability model](docs/capability-model.md)
 - [Capability policy](docs/capability-policy.md)
 - [Approval grants](docs/approval-grants.md)
 - [Tool adapter](docs/tool-adapter.md)
+- [Architecture decisions](docs/adr/README.md)
 - [MVP specification](docs/mvp-spec.md)
 - [Roadmap](docs/roadmap.md)
 
@@ -74,6 +77,7 @@ AI OS is in the early part of **Phase 1: Safe Local Runtime**.
 
 Implemented:
 
+- structured Threat Model, Capability Model, and Architecture Decision Records
 - strict Task JSON contracts and validation in `aios-core`
 - goal, idempotency, capability, budget, and approval boundary checks
 - network deny-by-default with exact host allowlists
