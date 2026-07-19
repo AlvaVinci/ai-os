@@ -17,7 +17,7 @@ None of these crates executes models, tools, or operating-system operations. The
 
 ```text
 +---------------- CLI / Local API ----------------+
-| Submit, inspect, approve, and cancel tasks       |
+| Submit, inspect, and cancel tasks                |
 +-------------------------+------------------------+
                           |
 +---------------- Task Supervisor ----------------+
@@ -63,7 +63,7 @@ The current implementation is synchronous and process-local. It limits the numbe
 - Refuses to replace an existing socket path and removes only the exact socket inode it created.
 - Returns stable error categories without internal I/O or storage details.
 
-`aiosctl` uses the same Protocol Version 1 types as the daemon for submission, inspection, event retrieval, and lifecycle transitions. The daemon currently loses Task input and in-memory idempotency state on restart. Persisted audit events remain available through the SQLite layer.
+`aiosctl` uses the same Protocol Version 2 types as the daemon for submission, inspection, event retrieval, and lifecycle transitions. Version 2 removes the unsafe Task-ID-only approval methods from Version 1. The daemon currently loses Task input and in-memory idempotency state on restart. Persisted audit events remain available through the SQLite layer.
 
 ### Policy & Capability Engine
 
@@ -85,7 +85,7 @@ This policy layer does not yet enforce operating-system access. Runtime adapters
 - Returns a linear grant that cannot be cloned, debugged, or serialized.
 - Consumes the grant on every authorization attempt, including scope mismatch and expiration.
 
-The current `ApprovalAuthority` is process-local and uses monotonic deadlines. Approval IDs are public identifiers, not bearer secrets. A trusted adapter must bind each Operation ID to one exact resource and keep the resource value outside default audit payloads. Local API, Event Store, Task lifecycle, and execution-adapter integration remain future work. See [Approval grants](approval-grants.md).
+The current supervisor integrates the process-local `ApprovalAuthority` with capability evaluation, exact in-memory operation binding, Task state, and resource-free audit events. Approval IDs are public identifiers, not bearer secrets. Cancellation and terminal transitions invalidate unused authority, while audit persistence failures leave state unchanged or fail closed. Local API exposure, restart recovery of live grants, and execution-adapter integration remain future work. See [Approval grants](approval-grants.md).
 
 ### Model Router
 

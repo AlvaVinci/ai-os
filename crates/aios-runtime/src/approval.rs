@@ -4,7 +4,7 @@ use std::fmt::{self, Display, Formatter};
 use std::str::FromStr;
 use std::time::{Duration, Instant};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::TaskId;
@@ -16,7 +16,7 @@ const MAX_MAX_TTL: Duration = Duration::from_secs(24 * 60 * 60);
 const MAX_ACTION_BYTES: usize = 64;
 
 /// Public identifier for one pending human approval.
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(transparent)]
 pub struct ApprovalId(Uuid);
 
@@ -35,7 +35,7 @@ impl FromStr for ApprovalId {
 }
 
 /// Opaque identifier that a trusted adapter binds to one exact operation.
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(transparent)]
 pub struct OperationId(Uuid);
 
@@ -110,6 +110,25 @@ impl ApprovalGrant {
             approval_id: self.approval_id,
         })
     }
+
+    pub(crate) fn approval_id(&self) -> ApprovalId {
+        self.approval_id
+    }
+
+    pub(crate) fn restore(self, authority: &mut ApprovalAuthority) {
+        authority.pending.insert(
+            self.approval_id,
+            PendingApproval {
+                task_id: self.task_id,
+                operation_id: self.operation_id,
+                action: self.action,
+                deadline: self.deadline,
+            },
+        );
+        authority
+            .operation_index
+            .insert((self.task_id, self.operation_id), self.approval_id);
+    }
 }
 
 struct PendingApproval {
@@ -152,7 +171,6 @@ impl ApprovalAuthority {
         action: &str,
         ttl: Duration,
     ) -> Result<ApprovalRequest, ApprovalError> {
-        self.purge_expired();
         if !is_valid_action(action) || ttl < Duration::from_millis(1) || ttl > self.max_ttl {
             return Err(ApprovalError::InvalidRequest);
         }
@@ -191,10 +209,15 @@ impl ApprovalAuthority {
 
     /// Approves and removes one pending request, returning a linear grant.
     pub fn approve(&mut self, approval_id: ApprovalId) -> Result<ApprovalGrant, ApprovalError> {
-        let pending = self.remove(approval_id).ok_or(ApprovalError::NotFound)?;
-        if Instant::now() >= pending.deadline {
+        let deadline = self
+            .pending
+            .get(&approval_id)
+            .ok_or(ApprovalError::NotFound)?
+            .deadline;
+        if Instant::now() >= deadline {
             return Err(ApprovalError::Expired);
         }
+        let pending = self.remove(approval_id).ok_or(ApprovalError::NotFound)?;
         Ok(ApprovalGrant {
             approval_id,
             task_id: pending.task_id,
@@ -206,16 +229,37 @@ impl ApprovalAuthority {
 
     /// Denies and removes one pending request.
     pub fn deny(&mut self, approval_id: ApprovalId) -> Result<(), ApprovalError> {
-        let pending = self.remove(approval_id).ok_or(ApprovalError::NotFound)?;
-        if Instant::now() >= pending.deadline {
+        let deadline = self
+            .pending
+            .get(&approval_id)
+            .ok_or(ApprovalError::NotFound)?
+            .deadline;
+        if Instant::now() >= deadline {
             return Err(ApprovalError::Expired);
         }
+        let _pending = self.remove(approval_id).ok_or(ApprovalError::NotFound)?;
         Ok(())
     }
 
     pub fn pending_count(&mut self) -> usize {
         self.purge_expired();
         self.pending.len()
+    }
+
+    pub(crate) fn contains(&self, approval_id: ApprovalId) -> bool {
+        self.pending.contains_key(&approval_id)
+    }
+
+    pub(crate) fn revoke(&mut self, approval_id: ApprovalId) -> bool {
+        self.remove(approval_id).is_some()
+    }
+
+    pub(crate) fn expired_ids(&self) -> Vec<ApprovalId> {
+        let now = Instant::now();
+        self.pending
+            .iter()
+            .filter_map(|(approval_id, pending)| (now >= pending.deadline).then_some(*approval_id))
+            .collect()
     }
 
     fn purge_expired(&mut self) {

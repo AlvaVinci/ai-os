@@ -35,7 +35,8 @@ Run Tasks safely on one Linux device.
 - [ ] Stable local API compatibility contract.
 - [ ] Encrypted Task-input storage and resumable recovery.
 - [ ] Operating-system enforcement adapters for filesystem, network, and tool capabilities.
-- [ ] Approval API and audit-event integration, cancellation, and timeout enforcement.
+- [x] Approval audit events, cancellation invalidation, and timeout enforcement.
+- [ ] Resource-safe approval API and execution-adapter integration.
 - [ ] One local model adapter.
 
 Exit criteria:

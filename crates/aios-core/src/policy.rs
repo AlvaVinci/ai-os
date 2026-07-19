@@ -1,4 +1,4 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::task::{is_normalized_absolute_path, is_valid_identifier, is_valid_network_host};
 use crate::{FileAccess, NetworkPolicy, TaskSpec, ValidationErrors};
@@ -18,7 +18,7 @@ pub enum CapabilityRequest<'a> {
 
 /// A resource-free authorization result safe for API responses and audit events.
 #[must_use]
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "decision", rename_all = "snake_case")]
 pub enum PolicyDecision {
     Allow,
@@ -27,7 +27,7 @@ pub enum PolicyDecision {
 }
 
 /// Stable, non-sensitive reason for a denied operation.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum DenialReason {
     InvalidRequest,
