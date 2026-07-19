@@ -131,6 +131,8 @@ The in-process Tool Adapter currently:
 - keeps the raw handler adapter behind `ToolExecutionGate`;
 - revalidates scope immediately before handler invocation.
 
+The Process Adapter can be registered as a constrained handler. It fixes a canonical executable and working directory, requires a trusted dynamic-argument policy, clears the environment, discards standard streams, and times out the direct child. These controls reduce ambient process authority but do not provide OS Capability enforcement.
+
 Trusted handlers remain capable of ambient process access. High-risk or untrusted Tools require an out-of-process adapter with a separate principal, descriptor allowlist, clean environment, explicit executable identity, time and memory limits, and no daemon control socket.
 
 ### Secrets
@@ -198,7 +200,7 @@ Violations of these invariants are security defects. The associated threats and 
 | Schema validation | implemented | implemented | implemented | implemented |
 | Deterministic policy | lexical path/access | exact host, deny default | exact Tool/action | capability-first action match |
 | Complete operation retention | runtime type available | runtime type available | implemented by Tool gate | implemented |
-| OS resource binding | not implemented | not implemented | in-process trusted handler only | process-local only |
+| OS resource binding | not implemented | not implemented | path/inode precheck only; OS binding not implemented | process-local only |
 | Restart recovery | no sensitive Task input | no sensitive Task input | no pending operation | public Task state only |
 
 The matrix must be read literally. A policy check without OS resource binding is not complete Capability enforcement.

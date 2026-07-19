@@ -49,4 +49,6 @@ The Tool Adapter is not an operating-system sandbox. Registered handlers are tru
 - preventing direct access to capabilities not represented by the Task;
 - keeping sensitive output out of logs and untrusted responses.
 
-Future out-of-process handlers must run under a separate operating-system principal or sandbox, receive no daemon control socket, use explicit executable paths and argument arrays, and enforce CPU, memory, time, file-descriptor, and network limits.
+The experimental [Process Adapter](process-adapter.md) supplies a constrained child-process handler with an explicit executable, validated argument array, cleared environment, null standard streams, and a direct-child timeout. It does not yet provide principal separation or operating-system isolation.
+
+Production out-of-process handlers must run under a separate operating-system principal or sandbox, receive no daemon control socket, use explicit executable paths and argument arrays, and enforce CPU, memory, time, file-descriptor, descendant-process, and network limits.
