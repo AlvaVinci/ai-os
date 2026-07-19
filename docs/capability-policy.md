@@ -4,6 +4,8 @@
 
 Experimental pre-execution policy for the Phase 1 runtime. It makes deterministic authorization decisions but does not perform operating-system operations.
 
+The normative authority chain, security invariants, and enforcement status are defined in the [Capability Model](capability-model.md).
+
 ## Decision model
 
 `CapabilityPolicy` can only be created from a `TaskSpec` that passes complete validation. Each operation produces one resource-free decision:

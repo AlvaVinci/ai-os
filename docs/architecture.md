@@ -145,6 +145,8 @@ The SQLite store deliberately does not persist Task goals or capability values. 
 
 ## Trust boundaries
 
+The normative security objectives, actors, data flows, threat register, residual risks, and release gates are maintained in the [Threat model](threat-model.md). Capability authority, lifecycle, resource semantics, and enforcement status are defined in the [Capability model](capability-model.md).
+
 Model output, retrieved documents, external tool output, and instructions written by anyone other than the active user are untrusted input. Instructions inside that data cannot modify task capabilities or policy.
 
 High-impact operations include:
@@ -165,7 +167,7 @@ High-impact operations include:
 - Audit persistence: bundled SQLite with versioned schemas
 - Sensitive Task persistence: deferred until encryption, retention, and deletion semantics are defined
 
-Technology choices that affect public contracts will be documented as architecture decision records.
+Technology choices that affect public contracts are documented as [Architecture Decision Records](adr/README.md).
 
 ## Compatibility
 

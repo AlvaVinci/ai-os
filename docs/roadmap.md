@@ -9,8 +9,8 @@ Define the project boundary and security model.
 - [x] Publish the vision, terminology, goals, and non-goals.
 - [x] Define the MVP contract and acceptance criteria.
 - [x] Separate AI decisions from deterministic enforcement.
-- [ ] Publish a structured threat model and full Capability model.
-- [ ] Establish architecture decision records.
+- [x] Publish a structured threat model and full Capability model.
+- [x] Establish architecture decision records.
 - [ ] Define representative developer workloads and benchmarks.
 
 Exit criteria:

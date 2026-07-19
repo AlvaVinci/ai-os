@@ -4,6 +4,8 @@
 
 AI OS is currently in an early implementation phase. Security issues include flaws in published designs, code, or defaults that could enable authorization bypass, data disclosure, arbitrary code execution, audit bypass, or denial of service.
 
+AI OS is not production-ready and must not yet be used as a security boundary for sensitive workloads. See the [Threat model](docs/threat-model.md), [Capability model](docs/capability-model.md), and [Architecture Decision Records](docs/adr/README.md) for current objectives, residual risks, and release blockers. Missing operating-system enforcement must not be inferred from policy-only behavior.
+
 ## Reporting a vulnerability
 
 Do not report vulnerabilities in public issues.
