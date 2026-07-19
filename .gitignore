@@ -1,0 +1,22 @@
+# Editors and operating systems
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Build output
+target/
+build/
+dist/
+
+# Logs and temporary files
+*.log
+tmp/
+*.tmp
