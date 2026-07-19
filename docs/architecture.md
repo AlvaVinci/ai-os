@@ -4,14 +4,15 @@
 
 Draft. The architecture will evolve from MVP implementation and measurement.
 
-The repository currently contains four crates:
+The repository currently contains five crates:
 
+- `aios-adapter-tool`: bounded catalog and in-process handler execution behind `ExecutionGate`
 - `aios-core`: Task contracts, validation, stable error codes, and lifecycle states
 - `aios-local-api`: bounded Unix-socket protocol and the experimental `aiosd` daemon
 - `aios-runtime`: synchronous task supervision and a bounded in-memory event store
 - `aios-storage-sqlite`: persistent audit events and event-derived Task state recovery
 
-None of these crates executes models, tools, or operating-system operations. They define the trust boundary that future execution components must satisfy.
+The Tool Adapter can invoke explicitly registered in-process handlers. No crate starts model processes or provides operating-system isolation yet. The remaining crates define the trust boundary that future execution components must satisfy.
 
 ## System overview
 
@@ -97,6 +98,17 @@ The current supervisor integrates the process-local `ApprovalAuthority` with cap
 - Redacts adapter errors at the shared execution boundary.
 
 The gate is an in-process authorization boundary, not an operating-system sandbox. Concrete adapters must prevent direct subprocess, file-descriptor, network, and device access outside the gate. Model and tool processes must not receive the daemon control socket or raw adapter handles.
+
+### Tool Adapter
+
+- Maps model-visible routes to capability tool and action identifiers fixed by trusted registration.
+- Encapsulates raw handlers and `ExecutionGate` behind the public `ToolExecutionGate` facade.
+- Limits route count, identifiers, argument count, argument bytes, and output bytes.
+- Passes arguments as a vector without shell interpolation, `PATH` lookup, or process creation.
+- Revalidates catalog scope immediately before invoking a handler.
+- Returns stable errors without route, argument, handler, or output values.
+
+The current adapter executes trusted in-process handlers only. Handler-specific validation, timeouts, partial-side-effect idempotency, and sensitive output handling remain handler responsibilities. See [Tool adapter](tool-adapter.md).
 
 ### Model Router
 

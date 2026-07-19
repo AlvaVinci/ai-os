@@ -34,10 +34,11 @@ Run Tasks safely on one Linux device.
 - [x] Bounded pending approvals and linear one-time approval grants.
 - [ ] Stable local API compatibility contract.
 - [ ] Encrypted Task-input storage and resumable recovery.
-- [ ] Operating-system enforcement adapters for filesystem, network, and tool capabilities.
 - [x] Approval audit events, cancellation invalidation, and timeout enforcement.
 - [x] Approval-aware in-process execution gate with complete-operation retention.
-- [ ] Principal-separated approval API and concrete execution adapters.
+- [x] Bounded in-process Tool Catalog and Handler adapter without shell execution.
+- [ ] Principal-separated approval API.
+- [ ] Operating-system enforcement and isolation adapters for filesystem, network, and out-of-process Tools.
 - [ ] One local model adapter.
 
 Exit criteria:

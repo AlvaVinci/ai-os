@@ -48,7 +48,7 @@ A network adapter must additionally bind authorization to the actual connection 
 - The action identifier is matched exactly against `approval.required_for`.
 - The tool adapter, not model output, is responsible for assigning the action identifier to an operation.
 
-A tool adapter must validate its structured arguments, avoid shell interpolation, restrict inherited capabilities, and call the policy before every operation, including retries.
+The current in-process [Tool Adapter](tool-adapter.md) fixes capability identifiers through trusted registration, bounds argument vectors, and performs no shell interpolation. Individual handlers must still validate argument meaning, restrict inherited capabilities, and pass every operation and retry through `ExecutionGate`.
 
 ## Enforcement boundary
 
@@ -61,4 +61,4 @@ The policy engine answers whether an operation may proceed. It does not make the
 5. apply operating-system isolation and resource limits;
 6. record a resource-free audit event for the decision.
 
-`aios-runtime` now provides `ExecutionGate`, which retains the complete adapter operation while approval is pending and invokes the adapter only after allow or successful grant consumption. The gate does not provide operating-system isolation by itself. Filesystem, network, tool, and model adapters must still enforce resolved resources, subprocess boundaries, and resource limits, so this module must not be described as complete operating-system capability enforcement.
+`aios-runtime` now provides `ExecutionGate`, which retains the complete adapter operation while approval is pending and invokes the adapter only after allow or successful grant consumption. The gate and in-process Tool Adapter do not provide operating-system isolation by themselves. Filesystem, network, out-of-process Tool, and model adapters must still enforce resolved resources, subprocess boundaries, and resource limits, so this module must not be described as complete operating-system capability enforcement.

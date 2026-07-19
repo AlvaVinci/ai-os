@@ -58,4 +58,4 @@ Denial, cancellation, and expiration remove retained operations. Audit failure d
 
 - define a principal-separated Version 3 local API for request, approval, and denial;
 - restore approval state safely after daemon restart;
-- implement concrete filesystem, network, tool, and model adapters behind `ExecutionGate`.
+- implement concrete filesystem, network, out-of-process Tool, and model adapters behind `ExecutionGate`.

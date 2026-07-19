@@ -1,0 +1,15 @@
+[package]
+name = "aios-adapter-tool"
+version = "0.1.0"
+description = "Bounded in-process Tool Adapter for AI OS"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+aios-core = { path = "../aios-core" }
+aios-runtime = { path = "../aios-runtime" }
