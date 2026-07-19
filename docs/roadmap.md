@@ -31,10 +31,11 @@ Run Tasks safely on one Linux device.
 - [x] Experimental long-running daemon and bounded Unix-socket API.
 - [x] Experimental `aiosctl` client and versioned local API requests.
 - [x] Deterministic filesystem, network, and tool capability policy evaluation.
+- [x] Bounded pending approvals and linear one-time approval grants.
 - [ ] Stable local API compatibility contract.
 - [ ] Encrypted Task-input storage and resumable recovery.
 - [ ] Operating-system enforcement adapters for filesystem, network, and tool capabilities.
-- [ ] Human approval, cancellation, and timeout integration.
+- [ ] Approval API and audit-event integration, cancellation, and timeout enforcement.
 - [ ] One local model adapter.
 
 Exit criteria:

@@ -57,8 +57,8 @@ The policy engine answers whether an operation may proceed. It does not make the
 1. construct the request from trusted adapter code;
 2. stop immediately on `deny`;
 3. pause without side effects on `approval_required`;
-4. re-evaluate the capability and validate a fresh approval token before execution;
+4. re-evaluate the capability and consume a fresh scoped approval grant before execution;
 5. apply operating-system isolation and resource limits;
 6. record a resource-free audit event for the decision.
 
-Adapters and approval tokens are future work. Until they exist, this module must not be described as complete operating-system capability enforcement.
+Linear approval grants now exist in `aios-runtime`, but API, audit-event, lifecycle, and execution-adapter integration remain future work. Until those adapters exist, this module must not be described as complete operating-system capability enforcement.

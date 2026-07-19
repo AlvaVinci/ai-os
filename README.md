@@ -63,6 +63,7 @@ Read more:
 - [Vision](docs/vision.md)
 - [Architecture](docs/architecture.md)
 - [Capability policy](docs/capability-policy.md)
+- [Approval grants](docs/approval-grants.md)
 - [MVP specification](docs/mvp-spec.md)
 - [Roadmap](docs/roadmap.md)
 
@@ -90,10 +91,13 @@ Implemented:
 - `aiosctl` for task submission, inspection, events, and lifecycle transitions
 - deterministic filesystem, network, and tool capability policy decisions
 - fail-closed authorization with resource-free denial and approval results
+- bounded, expiring, task-operation-action-scoped approval requests
+- linear one-time approval grants that cannot be cloned, debugged, or serialized
 
 Not implemented yet:
 
 - operating-system enforcement of capabilities
+- approval API, audit-event, and execution-adapter integration
 - persistent Task input and resumable execution recovery
 - model and tool execution
 - resource usage enforcement and monitoring

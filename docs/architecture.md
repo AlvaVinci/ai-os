@@ -76,6 +76,17 @@ The current `CapabilityPolicy` is a pure, deterministic pre-execution evaluator.
 
 This policy layer does not yet enforce operating-system access. Runtime adapters must call it before every operation and separately prevent path races, symlink escapes, DNS rebinding, inherited file descriptors, and subprocess bypasses. See [Capability policy](capability-policy.md) for the exact MVP semantics and enforcement boundary.
 
+### Approval Authority
+
+- Bounds pending approval count and lifetime.
+- Binds each request to an exact Task ID, opaque Operation ID, and action identifier.
+- Rejects duplicate pending requests for the same Task and Operation.
+- Removes a request on approval, denial, or expiration.
+- Returns a linear grant that cannot be cloned, debugged, or serialized.
+- Consumes the grant on every authorization attempt, including scope mismatch and expiration.
+
+The current `ApprovalAuthority` is process-local and uses monotonic deadlines. Approval IDs are public identifiers, not bearer secrets. A trusted adapter must bind each Operation ID to one exact resource and keep the resource value outside default audit payloads. Local API, Event Store, Task lifecycle, and execution-adapter integration remain future work. See [Approval grants](approval-grants.md).
+
 ### Model Router
 
 - Select models based on task requirements, privacy, latency, and available resources.
