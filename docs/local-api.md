@@ -2,9 +2,9 @@
 
 ## Status
 
-Experimental Protocol Version 2. The version number is explicit, but the framing and schema may still change before the first stable release.
+Experimental Protocol Version 3. The version number is explicit, but the framing and schema may still change before the first stable release.
 
-Version 2 removes the Version 1 `wait_for_approval` and `approve` methods. Those methods changed Task state using only a Task ID and were not bound to a policy-evaluated operation. Approval remains available through the trusted runtime API until a resource-safe local API schema is defined.
+Version 3 replaces Version 2 host-only network allowlists with exact TCP destinations containing a host and non-zero port. Version 3 retains Version 2's removal of the Version 1 `wait_for_approval` and `approve` methods. Those methods changed Task state using only a Task ID and were not bound to a policy-evaluated operation. Approval remains available through the trusted runtime API until a resource-safe local API schema is defined.
 
 ## Transport
 
@@ -34,19 +34,21 @@ These checks restrict access to the local operating-system user. Explicit peer-c
 
 ## Requests
 
-Every request uses an envelope with `protocol_version` and a tagged `request` object. Protocol Version 2 is the only supported version. Missing, unknown, or unsupported versions are rejected; unknown fields are also rejected.
+Every request uses an envelope with `protocol_version` and a tagged `request` object. Protocol Version 3 is the only supported version. Missing, unknown, or unsupported versions are rejected; unknown fields are also rejected.
+
+The server reads the bounded envelope version before deserializing the method or Task body. A Version 2 request therefore receives `UNSUPPORTED_PROTOCOL_VERSION` even when its legacy Task shape is invalid under Version 3; old Capability data is never reinterpreted under new semantics.
 
 ### Health
 
 ```json
-{"protocol_version":2,"request":{"method":"health"}}
+{"protocol_version":3,"request":{"method":"health"}}
 ```
 
 ### Submit
 
 ```json
 {
-  "protocol_version": 2,
+  "protocol_version": 3,
   "request": {
     "method": "submit",
     "task": {
@@ -72,6 +74,21 @@ Every request uses an envelope with `protocol_version` and a tagged `request` ob
 }
 ```
 
+Protocol Version 3 network allowlists use complete destinations:
+
+```json
+{
+  "network": {
+    "mode": "allow",
+    "destinations": [
+      {"host": "api.osv.dev", "transport": "tcp", "port": 443}
+    ]
+  }
+}
+```
+
+Version 2 `hosts` arrays are rejected. Migration requires choosing each TCP port explicitly; the runtime does not infer port 443, TLS, or any-port access.
+
 ### Supported methods
 
 | Method | Fields | Purpose |
@@ -91,7 +108,7 @@ Every response declares the server's protocol version. Successful responses use 
 
 ```json
 {
-  "protocol_version": 2,
+  "protocol_version": 3,
   "status": "error",
   "error": {
     "code": "INVALID_STATE_TRANSITION",
@@ -104,7 +121,7 @@ Internal I/O errors, database details, Task goals, and capability values are not
 
 ## Command-line client
 
-`aiosctl` speaks Protocol Version 2 and prints the complete JSON response. A Task file is read with a strict 65,536-byte limit before JSON parsing.
+`aiosctl` speaks Protocol Version 3 and prints the complete JSON response. A Task file is read with a strict 65,536-byte limit before JSON parsing.
 
 ```bash
 aiosctl --socket /path/to/aiosd.sock health
@@ -121,7 +138,7 @@ Successful API responses exit with code `0`, API errors and invalid CLI input wi
 
 ## Current limitations
 
-- Protocol Version 2 is experimental and does not yet carry a long-term compatibility guarantee.
+- Protocol Version 3 is experimental and does not yet carry a long-term compatibility guarantee.
 - Policy-bound approval requests are not exposed through the local API yet.
 - Task input and idempotency state are not restored after daemon restart.
 - Malformed clients are isolated, but one local user can still consume time by repeatedly opening connections.

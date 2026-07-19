@@ -29,7 +29,7 @@ Current resource classes:
 | Class | Resource scope | Operation scope | Approval action |
 | --- | --- | --- | --- |
 | Filesystem | normalized absolute path and descendants | `read` or `write`, independently | `filesystem.read` or `filesystem.write` |
-| Network | exact validated lowercase hostname or IP address | outbound connection | `network.egress` |
+| Network | exact validated lowercase hostname or IP address, TCP transport, and non-zero port | outbound TCP connection | `network.egress` |
 | Tool | exact registered capability Tool name | adapter-supplied action | the fixed action identifier |
 
 Planned classes such as secrets, models, devices, IPC, and process execution require a specification and adapter before use. They are denied by absence today.
@@ -82,7 +82,7 @@ Missing resource classes, empty allowlists, unknown Tool routes, invalid identif
 
 - Filesystem access mode is exact; read does not imply write and write does not imply read.
 - Filesystem descendants require a path-component boundary; string-prefix siblings are excluded.
-- Network hostname or IP matching is exact; subdomains, ports, schemes, and paths are not inferred.
+- Network hostname or IP, TCP transport, and port matching are exact; subdomains, resolved addresses, additional ports, schemes, and paths are not inferred.
 - Tool name and action matching are exact identifiers fixed by trusted registration.
 
 ### No ambient inheritance
@@ -112,10 +112,10 @@ Current policy is lexical. A Linux filesystem adapter must additionally:
 
 ### Network
 
-Current policy matches the requested host. A network adapter must additionally:
+Current policy matches the requested TCP host and port. A network adapter must additionally:
 
 - resolve and validate every actual destination address;
-- define allowed ports and protocols explicitly;
+- bind the configured TCP port to the actual socket;
 - control redirects, proxies, DNS rebinding, and alternate address forms;
 - bind approval to the final connection destination and transmitted data class;
 - prevent subprocess and inherited-socket bypass;
@@ -171,7 +171,7 @@ Task, Operation, Approval, Event sequence, and Tool route identifiers support co
 | Task/Operation/Approval IDs | allowed | allowed when needed | Event Store |
 | Stable decision and reason code | allowed | allowed | Event Store |
 | Goal and private context | excluded | excluded | deferred encrypted store |
-| Filesystem path or network host | excluded | excluded | Task storage only when encrypted |
+| Filesystem path or network destination | excluded | excluded | Task storage only when encrypted |
 | Tool arguments and output | excluded | excluded | not persisted by core runtime |
 | Approval Grant internals | excluded | excluded | never persisted in current design |
 | Secrets and credentials | excluded | excluded | no storage design yet |
@@ -198,7 +198,7 @@ Violations of these invariants are security defects. The associated threats and 
 | Layer | Filesystem | Network | Tool | Approval |
 | --- | --- | --- | --- | --- |
 | Schema validation | implemented | implemented | implemented | implemented |
-| Deterministic policy | lexical path/access | exact host, deny default | exact Tool/action | capability-first action match |
+| Deterministic policy | lexical path/access | exact TCP host and port, deny default | exact Tool/action | capability-first action match |
 | Complete operation retention | runtime type available | runtime type available | implemented by Tool gate | implemented |
 | OS resource binding | not implemented | not implemented | path/inode precheck only; OS binding not implemented | process-local only |
 | Restart recovery | no sensitive Task input | no sensitive Task input | no pending operation | public Task state only |

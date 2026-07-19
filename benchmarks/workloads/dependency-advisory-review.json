@@ -10,8 +10,12 @@
     ],
     "network": {
       "mode": "allow",
-      "hosts": [
-        "api.osv.dev"
+      "destinations": [
+        {
+          "host": "api.osv.dev",
+          "transport": "tcp",
+          "port": 443
+        }
       ]
     },
     "tools": [

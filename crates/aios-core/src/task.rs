@@ -10,7 +10,7 @@ const MAX_IDEMPOTENCY_KEY_BYTES: usize = 128;
 const MAX_FILESYSTEM_CAPABILITIES: usize = 128;
 const MAX_TOOLS: usize = 64;
 const MAX_APPROVAL_ACTIONS: usize = 64;
-const MAX_NETWORK_HOSTS: usize = 64;
+const MAX_NETWORK_DESTINATIONS: usize = 64;
 const MAX_PATH_BYTES: usize = 4_096;
 const MAX_IDENTIFIER_BYTES: usize = 64;
 
@@ -124,34 +124,60 @@ pub enum NetworkPolicy {
     #[default]
     Deny,
     Allow {
-        hosts: Vec<String>,
+        destinations: Vec<NetworkDestination>,
     },
+}
+
+/// One exact outbound network destination.
+#[derive(Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct NetworkDestination {
+    pub host: String,
+    pub transport: NetworkTransport,
+    pub port: u16,
+}
+
+/// Transport supported by the current Network Capability contract.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NetworkTransport {
+    Tcp,
 }
 
 impl NetworkPolicy {
     fn validate(&self, errors: &mut Vec<ValidationError>) {
-        let Self::Allow { hosts } = self else {
+        let Self::Allow { destinations } = self else {
             return;
         };
 
-        if hosts.is_empty() || hosts.len() > MAX_NETWORK_HOSTS {
+        if destinations.is_empty() || destinations.len() > MAX_NETWORK_DESTINATIONS {
             errors.push(ValidationError::new(
-                "capabilities.network.hosts",
-                format!("must contain between 1 and {MAX_NETWORK_HOSTS} entries"),
+                "capabilities.network.destinations",
+                format!("must contain between 1 and {MAX_NETWORK_DESTINATIONS} entries"),
             ));
         }
 
-        let mut seen_hosts = BTreeSet::new();
-        for host in hosts {
-            if !is_valid_network_host(host) {
+        let mut seen_destinations = BTreeSet::new();
+        for destination in destinations {
+            if !is_valid_network_host(&destination.host) {
                 errors.push(ValidationError::new(
-                    "capabilities.network.hosts",
+                    "capabilities.network.destinations.host",
                     "must contain lowercase host names or IP addresses without schemes or paths",
                 ));
             }
-            if !seen_hosts.insert(host) {
+            if destination.port == 0 {
                 errors.push(ValidationError::new(
-                    "capabilities.network.hosts",
+                    "capabilities.network.destinations.port",
+                    "must be between 1 and 65535",
+                ));
+            }
+            if !seen_destinations.insert((
+                &destination.host,
+                destination.transport,
+                destination.port,
+            )) {
+                errors.push(ValidationError::new(
+                    "capabilities.network.destinations",
                     "must not contain duplicate entries",
                 ));
             }
@@ -305,8 +331,17 @@ pub(crate) fn is_valid_network_host(host: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        ApprovalPolicy, Budget, CapabilitySet, FileAccess, FileCapability, NetworkPolicy, TaskSpec,
+        ApprovalPolicy, Budget, CapabilitySet, FileAccess, FileCapability, NetworkDestination,
+        NetworkPolicy, NetworkTransport, TaskSpec,
     };
+
+    fn destination(host: &str, port: u16) -> NetworkDestination {
+        NetworkDestination {
+            host: host.to_owned(),
+            transport: NetworkTransport::Tcp,
+            port,
+        }
+    }
 
     fn valid_task() -> TaskSpec {
         TaskSpec {
@@ -430,21 +465,23 @@ mod tests {
     }
 
     #[test]
-    fn rejects_network_allow_without_hosts() {
+    fn rejects_network_allow_without_destinations() {
         let mut task = valid_task();
-        task.capabilities.network = NetworkPolicy::Allow { hosts: Vec::new() };
+        task.capabilities.network = NetworkPolicy::Allow {
+            destinations: Vec::new(),
+        };
 
         assert!(task.validate().is_err());
     }
 
     #[test]
-    fn accepts_exact_hosts_and_ip_addresses() {
+    fn accepts_exact_tcp_destinations_and_ip_addresses() {
         let mut task = valid_task();
         task.capabilities.network = NetworkPolicy::Allow {
-            hosts: vec![
-                "api.example.com".to_owned(),
-                "127.0.0.1".to_owned(),
-                "2001:db8::1".to_owned(),
+            destinations: vec![
+                destination("api.example.com", 443),
+                destination("127.0.0.1", 8080),
+                destination("2001:db8::1", 8443),
             ],
         };
 
@@ -452,7 +489,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_schemes_paths_ports_and_invalid_host_names() {
+    fn rejects_schemes_paths_embedded_ports_and_invalid_host_names() {
         for host in [
             "https://example.com",
             "example.com/path",
@@ -463,7 +500,7 @@ mod tests {
         ] {
             let mut task = valid_task();
             task.capabilities.network = NetworkPolicy::Allow {
-                hosts: vec![host.to_owned()],
+                destinations: vec![destination(host, 443)],
             };
 
             assert!(task.validate().is_err(), "host should be rejected: {host}");
@@ -476,7 +513,10 @@ mod tests {
         task.capabilities.tools = vec!["test_runner".to_owned(), "test_runner".to_owned()];
         task.approval.required_for = vec!["git.commit".to_owned(), "git.commit".to_owned()];
         task.capabilities.network = NetworkPolicy::Allow {
-            hosts: vec!["example.com".to_owned(), "example.com".to_owned()],
+            destinations: vec![
+                destination("example.com", 443),
+                destination("example.com", 443),
+            ],
         };
 
         let errors = task
@@ -490,6 +530,47 @@ mod tests {
                 .count(),
             3
         );
+    }
+
+    #[test]
+    fn rejects_zero_ports_and_legacy_or_unknown_network_shapes() {
+        let mut task = valid_task();
+        task.capabilities.network = NetworkPolicy::Allow {
+            destinations: vec![destination("api.example.com", 0)],
+        };
+        let errors = task.validate().expect_err("port zero must be rejected");
+        assert!(
+            errors
+                .errors()
+                .iter()
+                .any(|error| error.field() == "capabilities.network.destinations.port")
+        );
+
+        let legacy = r#"{"mode":"allow","hosts":["api.example.com"]}"#;
+        assert!(serde_json::from_str::<NetworkPolicy>(legacy).is_err());
+
+        let unknown_transport = r#"
+        {
+          "mode": "allow",
+          "destinations": [
+            {"host": "api.example.com", "transport": "udp", "port": 443}
+          ]
+        }
+        "#;
+        assert!(serde_json::from_str::<NetworkPolicy>(unknown_transport).is_err());
+    }
+
+    #[test]
+    fn allows_same_host_on_distinct_ports() {
+        let mut task = valid_task();
+        task.capabilities.network = NetworkPolicy::Allow {
+            destinations: vec![
+                destination("api.example.com", 443),
+                destination("api.example.com", 8443),
+            ],
+        };
+
+        assert_eq!(task.validate(), Ok(()));
     }
 
     #[test]

@@ -82,7 +82,7 @@ Implemented:
 - structured Threat Model, Capability Model, and Architecture Decision Records
 - strict Task JSON contracts and validation in `aios-core`
 - goal, idempotency, capability, budget, and approval boundary checks
-- network deny-by-default with exact host allowlists
+- network deny-by-default with exact TCP host-and-port destinations
 - normalized absolute-path validation and traversal rejection
 - deterministic task states and idempotent cancellation
 - UUIDv7 task identifiers
@@ -94,7 +94,7 @@ Implemented:
 - audit-first state changes that leave task state unchanged when event storage fails
 - `aiosd` with a bounded, owner-only Unix-socket API
 - one-request-per-connection framing, timeouts, and event pagination
-- Protocol Version 2 with explicit incompatible-version rejection
+- Protocol Version 3 with explicit incompatible-version rejection
 - `aiosctl` for task submission, inspection, events, and lifecycle transitions
 - deterministic filesystem, network, and tool capability policy decisions
 - fail-closed authorization with resource-free denial and approval results
@@ -148,7 +148,7 @@ cargo run -p aios-local-api --bin aiosctl -- \
   --socket "$runtime_dir/aiosd.sock" submit examples/task.json
 ```
 
-The local API uses Protocol Version 2, but remains experimental and has no stable compatibility guarantee yet. See [Local API](docs/local-api.md) for the protocol and security boundaries.
+The local API uses Protocol Version 3, but remains experimental and has no stable compatibility guarantee yet. See [Local API](docs/local-api.md) for the protocol and security boundaries.
 
 ## Contributing
 

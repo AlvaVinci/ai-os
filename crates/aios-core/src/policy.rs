@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::task::{is_normalized_absolute_path, is_valid_identifier, is_valid_network_host};
-use crate::{FileAccess, NetworkPolicy, TaskSpec, ValidationErrors};
+use crate::{FileAccess, NetworkPolicy, NetworkTransport, TaskSpec, ValidationErrors};
 
 const MAX_ACTION_BYTES: usize = 64;
 const MAX_TOOL_NAME_BYTES: usize = 64;
@@ -11,9 +11,19 @@ const MAX_TOOL_NAME_BYTES: usize = 64;
 /// This type intentionally does not implement `Debug` or serialization because
 /// resource values may contain sensitive paths or destinations.
 pub enum CapabilityRequest<'a> {
-    File { path: &'a str, access: FileAccess },
-    Network { host: &'a str },
-    Tool { tool: &'a str, action: &'a str },
+    File {
+        path: &'a str,
+        access: FileAccess,
+    },
+    Network {
+        host: &'a str,
+        transport: NetworkTransport,
+        port: u16,
+    },
+    Tool {
+        tool: &'a str,
+        action: &'a str,
+    },
 }
 
 /// A resource-free authorization result safe for API responses and audit events.
@@ -50,7 +60,11 @@ impl<'a> CapabilityPolicy<'a> {
     pub fn evaluate(&self, request: CapabilityRequest<'_>) -> PolicyDecision {
         match request {
             CapabilityRequest::File { path, access } => self.evaluate_file(path, access),
-            CapabilityRequest::Network { host } => self.evaluate_network(host),
+            CapabilityRequest::Network {
+                host,
+                transport,
+                port,
+            } => self.evaluate_network(host, transport, port),
             CapabilityRequest::Tool { tool, action } => self.evaluate_tool(tool, action),
         }
     }
@@ -70,14 +84,21 @@ impl<'a> CapabilityPolicy<'a> {
         self.finish(granted, action)
     }
 
-    fn evaluate_network(&self, host: &str) -> PolicyDecision {
-        if !is_valid_network_host(host) {
+    fn evaluate_network(
+        &self,
+        host: &str,
+        transport: NetworkTransport,
+        port: u16,
+    ) -> PolicyDecision {
+        if !is_valid_network_host(host) || port == 0 {
             return invalid_request();
         }
 
         let granted = match &self.task.capabilities.network {
             NetworkPolicy::Deny => false,
-            NetworkPolicy::Allow { hosts } => hosts.iter().any(|allowed| allowed == host),
+            NetworkPolicy::Allow { destinations } => destinations.iter().any(|allowed| {
+                allowed.host == host && allowed.transport == transport && allowed.port == port
+            }),
         };
         self.finish(granted, "network.egress")
     }
@@ -133,7 +154,8 @@ fn path_is_within(path: &str, capability_path: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use crate::{
-        ApprovalPolicy, Budget, CapabilitySet, FileAccess, FileCapability, NetworkPolicy, TaskSpec,
+        ApprovalPolicy, Budget, CapabilitySet, FileAccess, FileCapability, NetworkDestination,
+        NetworkPolicy, NetworkTransport, TaskSpec,
     };
 
     use super::{CapabilityPolicy, CapabilityRequest, DenialReason, PolicyDecision};
@@ -154,7 +176,18 @@ mod tests {
                     },
                 ],
                 network: NetworkPolicy::Allow {
-                    hosts: vec!["api.example.com".to_owned(), "127.0.0.1".to_owned()],
+                    destinations: vec![
+                        NetworkDestination {
+                            host: "api.example.com".to_owned(),
+                            transport: NetworkTransport::Tcp,
+                            port: 443,
+                        },
+                        NetworkDestination {
+                            host: "127.0.0.1".to_owned(),
+                            transport: NetworkTransport::Tcp,
+                            port: 8080,
+                        },
+                    ],
                 },
                 tools: vec!["git".to_owned(), "test_runner".to_owned()],
             },
@@ -264,19 +297,35 @@ mod tests {
     }
 
     #[test]
-    fn network_policy_uses_exact_validated_hosts() {
+    fn network_policy_uses_exact_validated_destinations() {
         let task = task();
         let policy = CapabilityPolicy::from_task(&task).expect("valid policy");
 
-        for host in ["api.example.com", "127.0.0.1"] {
+        for (host, port) in [("api.example.com", 443), ("127.0.0.1", 8080)] {
             assert_eq!(
-                policy.evaluate(CapabilityRequest::Network { host }),
+                policy.evaluate(CapabilityRequest::Network {
+                    host,
+                    transport: NetworkTransport::Tcp,
+                    port,
+                }),
                 PolicyDecision::ApprovalRequired
             );
         }
         assert_eq!(
             policy.evaluate(CapabilityRequest::Network {
                 host: "sub.api.example.com",
+                transport: NetworkTransport::Tcp,
+                port: 443,
+            }),
+            PolicyDecision::Deny {
+                reason: DenialReason::CapabilityNotGranted,
+            }
+        );
+        assert_eq!(
+            policy.evaluate(CapabilityRequest::Network {
+                host: "api.example.com",
+                transport: NetworkTransport::Tcp,
+                port: 80,
             }),
             PolicyDecision::Deny {
                 reason: DenialReason::CapabilityNotGranted,
@@ -288,12 +337,26 @@ mod tests {
             "api.example.com:443",
         ] {
             assert_eq!(
-                policy.evaluate(CapabilityRequest::Network { host }),
+                policy.evaluate(CapabilityRequest::Network {
+                    host,
+                    transport: NetworkTransport::Tcp,
+                    port: 443,
+                }),
                 PolicyDecision::Deny {
                     reason: DenialReason::InvalidRequest,
                 }
             );
         }
+        assert_eq!(
+            policy.evaluate(CapabilityRequest::Network {
+                host: "api.example.com",
+                transport: NetworkTransport::Tcp,
+                port: 0,
+            }),
+            PolicyDecision::Deny {
+                reason: DenialReason::InvalidRequest,
+            }
+        );
     }
 
     #[test]
@@ -305,6 +368,8 @@ mod tests {
         assert_eq!(
             policy.evaluate(CapabilityRequest::Network {
                 host: "api.example.com",
+                transport: NetworkTransport::Tcp,
+                port: 443,
             }),
             PolicyDecision::Deny {
                 reason: DenialReason::CapabilityNotGranted,

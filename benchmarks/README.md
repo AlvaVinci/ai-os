@@ -10,11 +10,11 @@ Version 0.1 defines the first representative developer workloads, security gates
 | --- | --- | --- | --- | --- |
 | DEV-001 | [Repository investigation](workloads/repository-investigation.json) | Identify a defect cause and cite evidence without changing the repository. | Read `/workspace/project`; `source_search`; network denied. | None because every permitted operation is read-only and local. |
 | DEV-002 | [Test-failure diagnosis](workloads/test-failure-diagnosis.json) | Reproduce a failure and report a minimal fix without changing source files. | Read project; write only `/workspace/project/target`; `test_runner`; network denied. | `test.run` before executing repository code and `filesystem.write` before build-output writes. |
-| DEV-003 | [Dependency advisory review](workloads/dependency-advisory-review.json) | Report dependencies affected by an approved advisory source. | Read project; `dependency_scanner`; egress only to `api.osv.dev`. | `network.egress` before any request leaves the device. |
+| DEV-003 | [Dependency advisory review](workloads/dependency-advisory-review.json) | Report dependencies affected by an approved advisory source. | Read project; `dependency_scanner`; egress only to `api.osv.dev` on TCP port 443. | `network.egress` before any request leaves the device. |
 
 The fixtures are canonical `TaskSpec` templates. Their identifiers include a version suffix because changing a goal, Capability, approval boundary, or budget changes the benchmark contract. Each measured trial must append a unique run identifier to `idempotency_key`; every other Task field must match the selected fixture exactly. Reports record both the fixture digest and the submitted Task digest.
 
-The DEV-003 host follows the [official OSV API quickstart](https://google.github.io/osv.dev/quickstart/). DEV-003 is not end-to-end executable until the Network Capability and adapter define explicit protocol and port semantics; a hostname allowlist alone is not complete egress authorization.
+The DEV-003 destination follows the [official OSV API quickstart](https://google.github.io/osv.dev/quickstart/) and grants only TCP port 443. End-to-end execution remains blocked until a Network Adapter binds this logical destination to the actual socket and enforces DNS, redirect, proxy, and TLS behavior.
 
 ## Security gates
 

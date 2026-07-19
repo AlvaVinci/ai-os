@@ -65,7 +65,7 @@ The current implementation is synchronous and process-local. It limits the numbe
 - Refuses to replace an existing socket path and removes only the exact socket inode it created.
 - Returns stable error categories without internal I/O or storage details.
 
-`aiosctl` uses the same Protocol Version 2 types as the daemon for submission, inspection, event retrieval, and lifecycle transitions. Version 2 removes the unsafe Task-ID-only approval methods from Version 1. The daemon currently loses Task input and in-memory idempotency state on restart. Persisted audit events remain available through the SQLite layer.
+`aiosctl` uses the same Protocol Version 3 types as the daemon for submission, inspection, event retrieval, and lifecycle transitions. Version 3 replaces host-only network allowlists with exact TCP destinations. It retains Version 2's removal of the unsafe Task-ID-only approval methods from Version 1. The daemon currently loses Task input and in-memory idempotency state on restart. Persisted audit events remain available through the SQLite layer.
 
 ### Policy & Capability Engine
 
