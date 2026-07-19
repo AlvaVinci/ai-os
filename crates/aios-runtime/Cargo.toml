@@ -1,0 +1,19 @@
+[package]
+name = "aios-runtime"
+version = "0.1.0"
+description = "Task supervision and event storage for AI OS"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+aios-core = { path = "../aios-core" }
+serde.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

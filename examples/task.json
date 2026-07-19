@@ -1,0 +1,30 @@
+{
+  "idempotency_key": "repo-analysis-2026-07-19-001",
+  "goal": "Analyze the repository and report the cause of failing tests",
+  "capabilities": {
+    "filesystem": [
+      {
+        "path": "/workspace/project",
+        "access": "read"
+      }
+    ],
+    "network": {
+      "mode": "deny"
+    },
+    "tools": [
+      "test_runner"
+    ]
+  },
+  "budget": {
+    "wall_time_seconds": 1800,
+    "memory_bytes": 8589934592,
+    "max_parallel_agents": 2
+  },
+  "approval": {
+    "required_for": [
+      "filesystem.write",
+      "git.commit",
+      "network.egress"
+    ]
+  }
+}
