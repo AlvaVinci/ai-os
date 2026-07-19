@@ -1,83 +1,87 @@
-# ロードマップ
+# Roadmap
 
-ロードマップは日付ではなく、検証可能な終了条件で管理します。各フェーズの設計は、前フェーズの計測結果に基づいて見直します。
+The roadmap uses verifiable exit criteria rather than calendar promises. Each phase may change based on measurements from the previous phase.
 
 ## Phase 0: Foundation
 
-目的は、プロジェクトの境界と安全性モデルを合意可能な形にすることです。
+Define the project boundary and security model.
 
-- ビジョン、用語、ゴール、非ゴールの公開
-- MVP仕様と受け入れ条件の作成
-- 脅威モデルとCapabilityモデルの設計
-- 技術選定を記録するADRの運用開始
-- 代表的な開発者タスクとベンチマークの定義
+- [x] Publish the vision, terminology, goals, and non-goals.
+- [x] Define the MVP contract and acceptance criteria.
+- [x] Separate AI decisions from deterministic enforcement.
+- [ ] Publish a structured threat model and full Capability model.
+- [ ] Establish architecture decision records.
+- [ ] Define representative developer workloads and benchmarks.
 
-終了条件:
+Exit criteria:
 
-- 3つ以上の代表ユースケースについて、必要な能力と承認境界を説明できる
-- MVPの受け入れ条件が自動テストへ変換可能な具体性を持つ
-- 中核コンポーネント間の責務と信頼境界が文書化されている
+- At least three representative use cases identify required capabilities and approval boundaries.
+- MVP acceptance criteria can be converted into automated tests.
+- Component responsibilities and trust boundaries are documented.
 
 ## Phase 1: Safe Local Runtime
 
-目的は、単一Linux端末でTaskを安全に実行する最小ランタイムを作ることです。
+Run Tasks safely on one Linux device.
 
-- Task APIと決定論的な状態機械
-- 単一エージェントのSupervisor
-- ファイル、ネットワーク、ToolのCapability評価
-- 承認、キャンセル、タイムアウト
-- 追記型Event Store
-- 1つのローカルモデルアダプター
+- [x] Strict Task schema and validation.
+- [x] Deterministic Task state machine.
+- [x] Idempotent submission in the synchronous Supervisor.
+- [x] Bounded append-only in-memory Event Store.
+- [ ] Long-running daemon and local API.
+- [ ] Persistent Task and Event storage.
+- [ ] Filesystem, network, and tool capability enforcement.
+- [ ] Human approval, cancellation, and timeout integration.
+- [ ] One local model adapter.
 
-終了条件:
+Exit criteria:
 
-- MVP仕様の権限、承認、キャンセルに関する受け入れ条件を満たす
-- 禁止されたネットワークおよびファイル操作がテストで遮断される
-- ランタイム再起動後にTask状態を復元できる
+- Permission, approval, and cancellation acceptance criteria pass.
+- Tests block unauthorized network and filesystem operations.
+- Task state can be recovered after a runtime restart.
 
 ## Phase 2: Resource-Aware Execution
 
-目的は、複数Taskとモデルの資源競合を管理することです。
+Manage resource contention between Tasks and models.
 
-- CPU、RAM、実行時間の強制上限
-- GPU、VRAM使用量の観測
-- 優先度と同時実行制御
-- モデルのロード、共有、解放ポリシー
-- 資源消費と完了品質のベンチマーク
+- enforce CPU, RAM, and wall-time limits
+- observe GPU and VRAM usage
+- manage priority and concurrency
+- control model loading, sharing, and release
+- benchmark resource use against task quality
 
-終了条件:
+Exit criteria:
 
-- 予算超過Taskが他Taskやホストを不安定化させず終了する
-- 同一ワークロードについて、速度・メモリ・品質の比較結果を再現できる
-- スケジューラ判断をEventから説明できる
+- A Task exceeding its budget stops without destabilizing other Tasks or the host.
+- Speed, memory, and quality comparisons are reproducible for one workload.
+- Scheduler decisions can be explained from Events.
 
 ## Phase 3: Developer Experience
 
-目的は、開発者が実際のリポジトリ作業に利用できる操作性を提供することです。
+Support practical repository workflows.
 
-- CLIとローカルAPIの安定化
-- 複数エージェントと依存関係
-- 開発ツール向けSDK
-- タスクテンプレートとポリシープロファイル
-- 診断、エクスポート、再実行
+- stabilize the CLI and local API
+- support multiple agents and dependencies
+- provide developer SDKs
+- publish task templates and policy profiles
+- support diagnostics, export, and retry
 
-終了条件:
+Exit criteria:
 
-- 代表的なリポジトリ調査タスクをローカルモデルで完了できる
-- 新しいToolを中核の変更なしに追加できる
-- 失敗したTaskについて原因と再実行条件を特定できる
+- A representative repository investigation completes with a local model.
+- A new Tool can be added without changing the core runtime.
+- A failed Task exposes enough structured information to identify retry conditions.
 
 ## Phase 4: OS-Level Optimization
 
-目的は、ユーザー空間だけでは解決できない性能・隔離上の課題を特定し、必要なOS拡張を評価することです。
+Identify performance or isolation limits that user-space code cannot solve.
 
-- cgroups、namespaces、eBPFなど既存Linux機能の評価
-- モデル重み、KVキャッシュ、共有メモリの最適化
-- GPU/NPUスケジューリングの制約分析
-- カーネル拡張と独自カーネルの費用対効果評価
+- evaluate cgroups, namespaces, eBPF, and other existing Linux facilities
+- optimize model weights, KV caches, and shared memory
+- analyze GPU and NPU scheduling constraints
+- compare kernel extensions with a custom kernel
 
-終了条件:
+Exit criteria:
 
-- 実測されたボトルネックとユーザー影響が文書化されている
-- ユーザー空間、Linux拡張、独自カーネルの代替案を比較できる
-- OSレベル変更のセキュリティとロールバック方法が定義されている
+- Measured bottlenecks and user impact are documented.
+- User-space, Linux-extension, and custom-kernel alternatives are compared.
+- Security and rollback procedures exist for every OS-level change.

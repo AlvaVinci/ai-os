@@ -1,62 +1,62 @@
-# ビジョン
+# Vision
 
-## 背景
+## Background
 
-現在の汎用OSは、人間がアプリケーション、ファイル、ウィンドウを直接操作することを前提に発展してきました。AIエージェントをその上で動かすと、目的、権限、文脈、モデル、資源予算、承認、監査がアプリケーションごとに分断されます。
+General-purpose operating systems evolved around people directly operating applications, files, and windows. When AI agents run on top of those systems, goals, permissions, context, models, resource budgets, approvals, and audit records are often fragmented across applications.
 
-AI OSは、これらを共通の実行基盤で管理し、AIを安全かつ効率的にローカル環境で動作させることを目指します。
+AI OS aims to manage those concerns through a shared local runtime so that AI workloads can run safely and efficiently on personal computers.
 
-## ゴール
+## Goals
 
-- 個人データを端末内に保持したまま、有用なAIタスクを実行できること
-- 複数のモデルとエージェントを、共通の権限・資源・監査モデルで扱えること
-- AIによる提案とOSによる強制を分離し、予測不能なモデル出力を安全に扱えること
-- CPU、GPU、RAM、VRAM、電力、時間、費用の制約下で実行方法を選択できること
-- 既存のLinuxツールや開発ワークフローと共存できること
+- Run useful AI tasks while keeping personal data on the device by default.
+- Manage multiple models and agents through common permission, resource, and audit contracts.
+- Separate AI proposals from deterministic enforcement of permissions and limits.
+- Choose execution strategies under CPU, GPU, RAM, VRAM, power, time, and cost constraints.
+- Remain compatible with Linux tools and existing developer workflows.
 
-## 非ゴール
+## Non-goals
 
-- 初期段階でWindows、macOS、Linuxを置き換える汎用デスクトップOSを提供すること
-- AIにメモリ保護、アクセス制御、ファイル整合性などの安全性保証を直接委ねること
-- 人間の承認なしに、不可逆または高影響な操作を完全自律実行すること
-- 特定のモデル、GPU、クラウドサービスだけに最適化すること
-- 自然言語だけを唯一の操作インターフェースにすること
+- Replacing Windows, macOS, or Linux as a general-purpose desktop OS in the initial phases.
+- Delegating memory protection, access control, or filesystem integrity directly to AI models.
+- Running irreversible or high-impact operations without human approval.
+- Optimizing the core design for only one model, GPU, or cloud service.
+- Making natural language the only user interface.
 
-## 対象ユーザー
+## Target users
 
-### 個人ユーザー
+### Individuals
 
-端末内の文書、予定、コードなどを活用しつつ、外部送信を制御したいユーザー。
+People who want to use local documents, schedules, code, and other private data while controlling external transmission.
 
-### ソフトウェア開発者
+### Software developers
 
-リポジトリ分析、実装、テスト、ドキュメント作成などを、権限と予算を指定してエージェントに委任したい開発者。
+Developers who want to delegate repository analysis, implementation, tests, and documentation with explicit permissions and budgets.
 
-### AIアプリケーション開発者
+### AI application developers
 
-モデル固有の実装から離れ、タスク、権限、監査、資源管理の共通APIを利用したい開発者。
+Developers who want common task, permission, audit, and resource APIs instead of rebuilding them for each model integration.
 
-## 代表的なユースケース
+## Representative use case
 
 ```text
-このリポジトリの不具合を調査し、修正案を作成してください。
-外部ネットワークは禁止。変更可能なのは src/ と tests/ のみ。
-メモリ上限は8 GiB、実行時間は30分です。
-コミットと削除は実行前に承認を求めてください。
+Investigate this repository and prepare a proposed fix for the failing tests.
+Do not use the network. You may modify only src/ and tests/.
+Use at most 8 GiB of memory and stop after 30 minutes.
+Ask for approval before committing or deleting files.
 ```
 
-AI OSは、この依頼をタスク、能力、予算、承認条件に分解します。エージェントは許可された範囲で実行し、すべての重要な判断と操作をイベントとして記録します。
+AI OS converts this request into a task, capabilities, budgets, and approval requirements. The agent works within that boundary, while important decisions and operations are recorded as structured events.
 
-## 成功の定義
+## Definition of success
 
-初期MVPの成功は、ベンチマーク上の最大推論速度だけでは判断しません。次の性質を同時に満たすことを重視します。
+MVP success is not determined by maximum inference speed alone. The runtime must also demonstrate that:
 
-- 権限外のファイルおよびネットワークへアクセスできない
-- タスクごとの資源上限を観測・強制できる
-- モデルや実行バックエンドを交換してもタスクAPIが維持される
-- 操作履歴から、失敗原因と人間の承認内容を追跡できる
-- ローカルモデルのみで、開発者向けの代表タスクを完了できる
+- unauthorized file and network access is blocked
+- task resource limits are observable and enforceable
+- task APIs remain stable when the model backend changes
+- failures and human approvals can be traced from events
+- representative developer tasks can complete with local models only
 
-## 基本的な考え方
+## Core position
 
-AI OSにおいてモデルはカーネルではありません。モデルは信頼境界の内側で自由に判断するコンポーネントであり、その出力は常に未検証入力として扱います。権限、資源上限、監査、不可逆操作の防止は、通常のプログラムとして検証可能な層が担当します。
+The model is not the kernel. A model is a component that reasons inside a trust boundary, and its output is always untrusted input. Deterministic software remains responsible for permissions, resource limits, auditability, and preventing irreversible operations.

@@ -1,102 +1,117 @@
-# アーキテクチャ
+# Architecture
 
-## ステータス
+## Status
 
-Draft。MVP実装と計測結果に基づいて変更します。
+Draft. The architecture will evolve from MVP implementation and measurement.
 
-## 全体構成
+The repository currently contains two crates:
+
+- `aios-core`: Task contracts, validation, stable error codes, and lifecycle states
+- `aios-runtime`: synchronous task supervision and a bounded in-memory event store
+
+Neither crate executes models, tools, or operating-system operations. They define the trust boundary that future execution components must satisfy.
+
+## System overview
 
 ```text
 +---------------- CLI / Local API ----------------+
-| タスク投入、状態取得、承認、キャンセル             |
+| Submit, inspect, approve, and cancel tasks       |
 +-------------------------+------------------------+
                           |
-+---------------- Task Supervisor -----------------+
-| 状態機械、エージェント管理、再試行、依存関係       |
++---------------- Task Supervisor ----------------+
+| State machine, agents, retry, and dependencies   |
 +-------------------------+------------------------+
                           |
 +------------ Policy & Capability Engine ----------+
-| 権限評価、承認ゲート、秘密情報、監査               |
+| Authorization, approvals, secrets, and audit     |
 +-------------------------+------------------------+
                           |
 +--------- Model Router & Resource Scheduler -------+
-| モデル選択、実行配置、CPU/GPU/RAM/時間の予算       |
+| Model choice, placement, CPU/GPU/RAM/time budget |
 +-------------------------+------------------------+
                           |
 +-------------- Runtime Adapters ------------------+
-| モデル実行、ツール実行、コンテキスト、イベント     |
+| Models, tools, context, and events               |
 +-------------------------+------------------------+
                           |
 +--------------------- Linux ----------------------+
-| プロセス、cgroups、namespaces、ファイル、デバイス  |
+| Processes, cgroups, namespaces, files, devices   |
 +--------------------------------------------------+
 ```
 
-## 責務の分離
+## Responsibilities
 
 ### Task Supervisor
 
-- タスクを検証し、一意なIDを割り当てる
-- タスク状態を決定論的な状態機械として管理する
-- エージェントの起動、停止、タイムアウト、再試行を制御する
-- 同じ冪等性キーによる重複実行を防ぐ
+- Validate tasks and assign unique identifiers.
+- Manage task state through a deterministic state machine.
+- Prevent duplicate execution through idempotency keys.
+- Coordinate future agent startup, cancellation, timeout, and retry behavior.
+- Record an event before applying each accepted state change.
+
+The current implementation is synchronous and process-local. It limits the number of retained Tasks, batches submission events atomically, and leaves state unchanged when event storage fails. Existing idempotent submissions remain retrievable when capacity is full.
 
 ### Policy & Capability Engine
 
-- ファイル、ネットワーク、ツール、秘密情報へのアクセスを評価する
-- 許可、拒否、人間による承認待ちのいずれかを返す
-- モデルのプロンプトや出力から独立して制約を強制する
-- 拒否と承認の理由を監査イベントとして保存する
+- Evaluate access to files, networks, tools, and secrets.
+- Return allow, deny, or human-approval-required decisions.
+- Enforce constraints independently from prompts and model output.
+- Record denial and approval reason codes without sensitive input values.
 
 ### Model Router
 
-- タスク要件、プライバシー、遅延、利用可能資源に応じてモデルを選択する
-- 初期設定ではローカル実行を優先する
-- 外部モデルは明示的な許可と送信対象の確定後にだけ使用する
-- モデル固有の入出力を共通インターフェースへ変換する
+- Select models based on task requirements, privacy, latency, and available resources.
+- Prefer local execution by default.
+- Use external models only after explicit permission and data-scope evaluation.
+- Adapt model-specific input and output to common contracts.
 
 ### Resource Scheduler
 
-- タスク単位のCPU、GPU、RAM、VRAM、時間上限を追跡する
-- 同時実行数と優先度を管理する
-- 制限超過時に新規作業を停止し、終了または承認待ちへ遷移させる
-- 将来は電力、温度、外部API費用を同じ予算モデルへ追加する
+- Track per-task CPU, GPU, RAM, VRAM, and time limits.
+- Manage priority and concurrency.
+- Stop new work when a limit is reached, then fail or await approval as defined by policy.
+- Later incorporate power, temperature, and external API cost.
 
 ### Context Store
 
-- コンテキストの出所、所有者、作成時刻、有効期限を保持する
-- 機密度とタスク境界に基づいて読み出しを制御する
-- 長期記憶を暗黙に共有しない
-- 削除要求をイベントログと分離して処理できるようにする
+- Preserve context provenance, ownership, creation time, and expiration.
+- Control reads by sensitivity and task boundary.
+- Never share long-term memory implicitly between tasks.
+- Keep deletion and retention semantics separate from immutable audit metadata.
 
 ### Event Store
 
-- タスク状態、能力評価、承認、ツール操作、資源消費を追記型で保存する
-- 秘密情報やモデルの生の思考過程を記録対象にしない
-- 構造化された理由コードと、必要最小限の説明を記録する
+- Append task lifecycle, policy, approval, tool, and resource events.
+- Exclude goals, capability values, secrets, and private model reasoning from default audit payloads.
+- Avoid automatic debug formatting for input types that may contain sensitive values.
+- Use structured reason codes and minimal explanations.
+- Bound resource usage and fail atomically when a batch cannot be stored.
 
-## 信頼境界
+The current `InMemoryEventStore` assigns a monotonically increasing sequence per task and enforces a configurable event limit. Persistent storage and tamper evidence are future work.
 
-モデル出力、取得した文書、外部ツール出力、ユーザー以外が作成したプロンプトは、すべて未信頼入力です。これらに含まれる命令は、タスクの能力やポリシーを変更できません。
+## Trust boundaries
 
-高影響操作には、少なくとも以下を含めます。
+Model output, retrieved documents, external tool output, and instructions written by anyone other than the active user are untrusted input. Instructions inside that data cannot modify task capabilities or policy.
 
-- 許可範囲外へのデータ送信
-- ファイルや履歴の削除
-- コミット、公開、デプロイ
-- 認証情報または個人情報の利用
-- システム設定や永続的な権限の変更
+High-impact operations include:
 
-## 実装方針
+- transmitting data outside the approved boundary
+- deleting files or history
+- committing, publishing, or deploying changes
+- using credentials or personal information
+- changing system settings or persistent permissions
 
-- 中核デーモンとポリシー層: Rustを第一候補とする
-- 低レベル連携: C ABIまたはOS標準インターフェースを使う
-- モデル実行: 既存のローカル推論ランタイムをアダプター経由で利用する
-- 実験的なモデル連携: Pythonを許容するが、権限強制は中核デーモンから分離しない
-- 永続化: 初期MVPでは単一端末向けの埋め込みデータベースを候補とする
+## Implementation direction
 
-言語や製品の最終決定は、MVPの性能、安全性、配布容易性を計測してからADRとして記録します。
+- Core domain and policy code: Rust
+- Long-running daemon: a Rust service that accepts only validated `aios-core` types
+- Low-level integration: C ABI or standard OS interfaces where required
+- Model execution: existing local inference runtimes behind adapters
+- Experimental model integrations: Python is allowed, but never as the capability enforcement layer
+- Persistence: an embedded database is the leading MVP candidate for a single-device runtime
 
-## 互換性
+Technology choices that affect public contracts will be documented as architecture decision records.
 
-初期MVPはLinuxを対象とします。既存アプリケーションを独自形式へ移植させるのではなく、プロセス、標準入出力、ファイル、ローカルソケット、コンテナを通じて統合します。macOSとWindowsは、コアAPI安定後の移植対象です。
+## Compatibility
+
+The first target is Linux. Existing applications integrate through processes, standard streams, files, local sockets, and containers rather than a proprietary application format. macOS and Windows ports may follow after the core API stabilizes.
