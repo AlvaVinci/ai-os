@@ -51,6 +51,7 @@ Local AI agent applications often implement model access, tools, permissions, bu
 - **FR-010**: Model runtimes can be replaced through a common adapter.
 - **FR-011**: The local API accepts bounded requests only through an owner-only Unix socket.
 - **FR-012**: Every local API request declares its protocol version, and unsupported versions are rejected explicitly.
+- **FR-013**: Capability decisions are deterministic, fail closed, and evaluate granted capability before approval requirements.
 
 ### Task input example
 
@@ -140,6 +141,10 @@ submitted -> validating -> queued -> running -> succeeded
 
 - External network access is denied by default.
 - Allowed network destinations are explicit lowercase host names or IP addresses without schemes, paths, or ports.
+- Filesystem scopes match only the normalized path itself or a descendant separated by `/`; string-prefix siblings do not match.
+- Read and write capabilities are independent and do not imply each other.
+- Tool names, network hosts, and approval action identifiers use exact matching.
+- Invalid operation requests and missing capabilities are denied with stable, resource-free reason codes.
 - Model output cannot modify capabilities.
 - Secrets are not stored in prompts, events, or user-facing errors in plaintext.
 - Context is not shared implicitly between Tasks.

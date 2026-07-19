@@ -30,9 +30,10 @@ Run Tasks safely on one Linux device.
 - [x] Persistent SQLite Event Store and event-derived state recovery.
 - [x] Experimental long-running daemon and bounded Unix-socket API.
 - [x] Experimental `aiosctl` client and versioned local API requests.
+- [x] Deterministic filesystem, network, and tool capability policy evaluation.
 - [ ] Stable local API compatibility contract.
 - [ ] Encrypted Task-input storage and resumable recovery.
-- [ ] Filesystem, network, and tool capability enforcement.
+- [ ] Operating-system enforcement adapters for filesystem, network, and tool capabilities.
 - [ ] Human approval, cancellation, and timeout integration.
 - [ ] One local model adapter.
 

@@ -241,12 +241,7 @@ fn validate_identifier(
     max_bytes: usize,
     errors: &mut Vec<ValidationError>,
 ) {
-    if value.is_empty()
-        || value.len() > max_bytes
-        || !value.chars().all(|character| {
-            character.is_ascii_alphanumeric() || matches!(character, '.' | '_' | ':' | '-')
-        })
-    {
+    if !is_valid_identifier(value, max_bytes) {
         errors.push(ValidationError::new(
             field,
             format!("must be 1 to {max_bytes} ASCII letters, digits, '.', '_', ':', or '-'"),
@@ -255,16 +250,7 @@ fn validate_identifier(
 }
 
 fn validate_absolute_normalized_path(path: &str, errors: &mut Vec<ValidationError>) {
-    let valid = path.starts_with('/')
-        && path != "/"
-        && path.len() <= MAX_PATH_BYTES
-        && !path.contains('\0')
-        && path
-            .split('/')
-            .skip(1)
-            .all(|component| !component.is_empty() && component != "." && component != "..");
-
-    if !valid {
+    if !is_normalized_absolute_path(path) {
         errors.push(ValidationError::new(
             "capabilities.filesystem.path",
             "must be a normalized absolute path below the filesystem root",
@@ -272,7 +258,26 @@ fn validate_absolute_normalized_path(path: &str, errors: &mut Vec<ValidationErro
     }
 }
 
-fn is_valid_network_host(host: &str) -> bool {
+pub(crate) fn is_valid_identifier(value: &str, max_bytes: usize) -> bool {
+    !value.is_empty()
+        && value.len() <= max_bytes
+        && value.chars().all(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, '.' | '_' | ':' | '-')
+        })
+}
+
+pub(crate) fn is_normalized_absolute_path(path: &str) -> bool {
+    path.starts_with('/')
+        && path != "/"
+        && path.len() <= MAX_PATH_BYTES
+        && !path.contains('\0')
+        && path
+            .split('/')
+            .skip(1)
+            .all(|component| !component.is_empty() && component != "." && component != "..")
+}
+
+pub(crate) fn is_valid_network_host(host: &str) -> bool {
     if host.is_empty() || host.len() > 253 || host != host.to_ascii_lowercase() {
         return false;
     }
