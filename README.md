@@ -79,13 +79,19 @@ Implemented:
 - UUIDv7 task identifiers
 - bounded synchronous `TaskSupervisor` with idempotent submission
 - bounded, append-only `InMemoryEventStore`
+- SQLite-backed Event Store with atomic batches and schema versioning
+- event-derived Task state recovery after a restart
+- owner-only database creation and insecure-file rejection on Unix
 - audit-first state changes that leave task state unchanged when event storage fails
+- `aiosd` with a bounded, owner-only Unix-socket API
+- one-request-per-connection framing, timeouts, and event pagination
+- Protocol Version 1 with explicit incompatible-version rejection
+- `aiosctl` for task submission, inspection, events, and lifecycle transitions
 
 Not implemented yet:
 
-- a long-running daemon and local API
 - operating-system enforcement of capabilities
-- persistent event and task storage
+- persistent Task input and resumable execution recovery
 - model and tool execution
 - resource usage enforcement and monitoring
 
@@ -100,6 +106,29 @@ cargo clippy --workspace --all-targets --locked -- -D warnings
 ```
 
 See [examples/task.json](examples/task.json) for a task input example. Tests load this file directly to detect schema drift.
+
+Run the experimental daemon in a private temporary directory:
+
+```bash
+runtime_dir=/tmp/aios-demo
+install -d -m 700 "$runtime_dir"
+cargo run -p aios-local-api --bin aiosd -- \
+  --socket "$runtime_dir/aiosd.sock" \
+  --database "$runtime_dir/events.sqlite"
+```
+
+In another terminal, use the experimental client:
+
+```bash
+runtime_dir=/tmp/aios-demo
+cargo run -p aios-local-api --bin aiosctl -- \
+  --socket "$runtime_dir/aiosd.sock" health
+
+cargo run -p aios-local-api --bin aiosctl -- \
+  --socket "$runtime_dir/aiosd.sock" submit examples/task.json
+```
+
+The local API uses Protocol Version 1, but remains experimental and has no stable compatibility guarantee yet. See [Local API](docs/local-api.md) for the protocol and security boundaries.
 
 ## Contributing
 

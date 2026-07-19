@@ -49,6 +49,8 @@ Local AI agent applications often implement model access, tools, permissions, bu
 - **FR-008**: Wall-time and memory limits are enforced.
 - **FR-009**: State transitions and policy decisions are stored as Events.
 - **FR-010**: Model runtimes can be replaced through a common adapter.
+- **FR-011**: The local API accepts bounded requests only through an owner-only Unix socket.
+- **FR-012**: Every local API request declares its protocol version, and unsupported versions are rejected explicitly.
 
 ### Task input example
 
@@ -146,7 +148,8 @@ submitted -> validating -> queued -> running -> succeeded
 
 ### Reliability
 
-- Terminal Task state and Events survive a runtime restart once persistence is implemented.
+- Events and their derived public Task state survive a runtime restart.
+- Resumable Task input remains separate from audit persistence and requires an encrypted storage design.
 - Event sequence numbers increase monotonically per Task.
 - Tool retries are limited to operations declared idempotent.
 - Multi-event submission records are appended atomically.
@@ -156,6 +159,8 @@ submitted -> validating -> queued -> running -> succeeded
 - Policy evaluation does not require model inference.
 - Keeping idle models loaded is configurable.
 - In-memory collections have explicit per-Task or per-runtime upper bounds.
+- Local API frames are bounded and each connection has read and write timeouts.
+- MVP request handling is sequential, preventing unbounded connection concurrency.
 - Performance targets will be set after baseline measurement.
 
 ### Compatibility
@@ -170,7 +175,7 @@ submitted -> validating -> queued -> running -> succeeded
 3. Given a memory-limited Task, when usage reaches the limit, then child processes stop and the Task returns `BUDGET_EXCEEDED`.
 4. Given a commit that requires approval, when an agent requests it, then the Task enters `waiting_approval` and no commit occurs first.
 5. Given identical input and an idempotency key, when submitted concurrently twice, then only one Task executes.
-6. Given a running Task, when the runtime restarts, then its recovery state and existing Events can be inspected.
+6. Given a running Task with persisted Events, when the runtime restarts, then its recovery state and existing Events can be inspected without loading goal or capability values.
 7. Given two model adapters, when configuration switches between them, then the Task API format does not change.
 8. Given Event storage failure, when a state change is requested, then the Task state remains unchanged.
 

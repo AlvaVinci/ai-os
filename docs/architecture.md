@@ -4,12 +4,14 @@
 
 Draft. The architecture will evolve from MVP implementation and measurement.
 
-The repository currently contains two crates:
+The repository currently contains four crates:
 
 - `aios-core`: Task contracts, validation, stable error codes, and lifecycle states
+- `aios-local-api`: bounded Unix-socket protocol and the experimental `aiosd` daemon
 - `aios-runtime`: synchronous task supervision and a bounded in-memory event store
+- `aios-storage-sqlite`: persistent audit events and event-derived Task state recovery
 
-Neither crate executes models, tools, or operating-system operations. They define the trust boundary that future execution components must satisfy.
+None of these crates executes models, tools, or operating-system operations. They define the trust boundary that future execution components must satisfy.
 
 ## System overview
 
@@ -51,6 +53,18 @@ Neither crate executes models, tools, or operating-system operations. They defin
 
 The current implementation is synchronous and process-local. It limits the number of retained Tasks, batches submission events atomically, and leaves state unchanged when event storage fails. Existing idempotent submissions remain retrievable when capacity is full.
 
+### Local API
+
+- Listens only on an owner-only Unix domain socket.
+- Uses a four-byte length prefix and bounded JSON payloads.
+- Handles one request per connection with read and write timeouts.
+- Requires an explicit protocol version and rejects unsupported versions.
+- Processes connections sequentially to keep concurrency bounded in the MVP.
+- Refuses to replace an existing socket path and removes only the exact socket inode it created.
+- Returns stable error categories without internal I/O or storage details.
+
+`aiosctl` uses the same Protocol Version 1 types as the daemon for submission, inspection, event retrieval, and lifecycle transitions. The daemon currently loses Task input and in-memory idempotency state on restart. Persisted audit events remain available through the SQLite layer.
+
 ### Policy & Capability Engine
 
 - Evaluate access to files, networks, tools, and secrets.
@@ -87,7 +101,9 @@ The current implementation is synchronous and process-local. It limits the numbe
 - Use structured reason codes and minimal explanations.
 - Bound resource usage and fail atomically when a batch cannot be stored.
 
-The current `InMemoryEventStore` assigns a monotonically increasing sequence per task and enforces a configurable event limit. Persistent storage and tamper evidence are future work.
+The `InMemoryEventStore` assigns a monotonically increasing sequence per Task and enforces a configurable event limit. `SqliteEventStore` adds transactional batches, schema versioning, owner-only file creation on Unix, corrupt-sequence detection, and restart-safe recovery of public Task state.
+
+The SQLite store deliberately does not persist Task goals or capability values. Resuming execution after a restart requires a separate encrypted Task-input design. Tamper evidence is also future work.
 
 ## Trust boundaries
 
@@ -108,7 +124,8 @@ High-impact operations include:
 - Low-level integration: C ABI or standard OS interfaces where required
 - Model execution: existing local inference runtimes behind adapters
 - Experimental model integrations: Python is allowed, but never as the capability enforcement layer
-- Persistence: an embedded database is the leading MVP candidate for a single-device runtime
+- Audit persistence: bundled SQLite with versioned schemas
+- Sensitive Task persistence: deferred until encryption, retention, and deletion semantics are defined
 
 Technology choices that affect public contracts will be documented as architecture decision records.
 
