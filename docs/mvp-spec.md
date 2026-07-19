@@ -52,6 +52,7 @@ Local AI agent applications often implement model access, tools, permissions, bu
 - **FR-011**: The local API accepts bounded requests only through an owner-only Unix socket.
 - **FR-012**: Every local API request declares its protocol version, and unsupported versions are rejected explicitly.
 - **FR-013**: Capability decisions are deterministic, fail closed, and evaluate granted capability before approval requirements.
+- **FR-014**: Approval grants are task-, operation-, and action-scoped, time-limited, and consumable only once.
 
 ### Task input example
 
@@ -111,6 +112,8 @@ submitted -> validating -> queued -> running -> succeeded
 - Terminal tasks never return to an execution state.
 - A retry creates a new Task ID and references the original Task ID.
 - An approval identifies the operation, resource, and expiration.
+- Approval and Operation IDs are identifiers, not bearer secrets.
+- A scope mismatch, expiration, approval, or denial consumes or removes the corresponding authorization object.
 
 ## 6. Boundaries and errors
 
@@ -145,6 +148,8 @@ submitted -> validating -> queued -> running -> succeeded
 - Read and write capabilities are independent and do not imply each other.
 - Tool names, network hosts, and approval action identifiers use exact matching.
 - Invalid operation requests and missing capabilities are denied with stable, resource-free reason codes.
+- Pending approvals are bounded, expire against a monotonic process-local clock, and reject duplicate Task and Operation pairs.
+- Linear approval grants cannot be cloned, debugged, or serialized through safe Rust APIs.
 - Model output cannot modify capabilities.
 - Secrets are not stored in prompts, events, or user-facing errors in plaintext.
 - Context is not shared implicitly between Tasks.
