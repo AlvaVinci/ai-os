@@ -11,7 +11,7 @@ Define the project boundary and security model.
 - [x] Separate AI decisions from deterministic enforcement.
 - [x] Publish a structured threat model and full Capability model.
 - [x] Establish architecture decision records.
-- [ ] Define representative developer workloads and benchmarks.
+- [x] Define representative developer workloads and benchmarks.
 
 Exit criteria:
 

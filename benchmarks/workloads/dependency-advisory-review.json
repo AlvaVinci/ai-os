@@ -1,0 +1,31 @@
+{
+  "idempotency_key": "benchmark-dependency-advisory-review-v1",
+  "goal": "Review the repository Cargo dependency manifest against the approved advisory service and report affected packages without modifying files",
+  "capabilities": {
+    "filesystem": [
+      {
+        "path": "/workspace/project",
+        "access": "read"
+      }
+    ],
+    "network": {
+      "mode": "allow",
+      "hosts": [
+        "api.osv.dev"
+      ]
+    },
+    "tools": [
+      "dependency_scanner"
+    ]
+  },
+  "budget": {
+    "wall_time_seconds": 1200,
+    "memory_bytes": 2147483648,
+    "max_parallel_agents": 1
+  },
+  "approval": {
+    "required_for": [
+      "network.egress"
+    ]
+  }
+}

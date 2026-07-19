@@ -68,6 +68,7 @@ Read more:
 - [Approval grants](docs/approval-grants.md)
 - [Tool adapter](docs/tool-adapter.md)
 - [Process adapter](docs/process-adapter.md)
+- [Developer workloads and benchmarks](benchmarks/README.md)
 - [Architecture decisions](docs/adr/README.md)
 - [MVP specification](docs/mvp-spec.md)
 - [Roadmap](docs/roadmap.md)
@@ -104,6 +105,7 @@ Implemented:
 - guarded adapter execution with complete-operation retention across approval
 - bounded in-process Tool Catalog and Handler adapter without shell execution
 - bounded child-process Tool handler with explicit executable identity, argument policy, clean environment, and direct-child timeout
+- three versioned developer workload fixtures with tested Capability and approval boundaries
 
 Not implemented yet:
 

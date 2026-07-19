@@ -1,0 +1,26 @@
+{
+  "idempotency_key": "benchmark-repository-investigation-v1",
+  "goal": "Inspect the repository, identify the root cause of one reported defect, and cite supporting source locations without modifying files",
+  "capabilities": {
+    "filesystem": [
+      {
+        "path": "/workspace/project",
+        "access": "read"
+      }
+    ],
+    "network": {
+      "mode": "deny"
+    },
+    "tools": [
+      "source_search"
+    ]
+  },
+  "budget": {
+    "wall_time_seconds": 900,
+    "memory_bytes": 2147483648,
+    "max_parallel_agents": 1
+  },
+  "approval": {
+    "required_for": []
+  }
+}
