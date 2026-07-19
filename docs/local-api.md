@@ -1,0 +1,129 @@
+# Local API
+
+## Status
+
+Experimental Protocol Version 1. The version number is explicit, but the framing and schema may still change before the first stable release.
+
+## Transport
+
+`aiosd` listens on a Unix domain socket. It does not bind a TCP or UDP port.
+
+Every connection carries exactly one request and one response:
+
+```text
+4-byte unsigned big-endian JSON length
+N bytes of UTF-8 JSON
+```
+
+The default frame limit is 65,536 bytes. Configurations below 1,024 bytes or above 1 MiB are rejected. Empty frames are invalid.
+
+Each connection has a five-second read and write timeout by default. The MVP handles connections sequentially, so concurrent work cannot grow without a fixed bound.
+
+## Filesystem boundary
+
+- The socket parent directory must be owner-only on Unix, normally mode `0700`.
+- A missing immediate parent directory is created with mode `0700`.
+- The socket is set to mode `0600`.
+- Symlinked or group/world-accessible parent directories are rejected.
+- An existing socket path is never removed or replaced automatically.
+- On normal shutdown, the server removes the socket only if its device and inode still match the socket it created.
+
+These checks restrict access to the local operating-system user. Explicit peer-credential policies and multi-user operation are future work.
+
+## Requests
+
+Every request uses an envelope with `protocol_version` and a tagged `request` object. Protocol Version 1 is the only supported version. Missing, unknown, or unsupported versions are rejected; unknown fields are also rejected.
+
+### Health
+
+```json
+{"protocol_version":1,"request":{"method":"health"}}
+```
+
+### Submit
+
+```json
+{
+  "protocol_version": 1,
+  "request": {
+    "method": "submit",
+    "task": {
+      "idempotency_key": "repo-analysis-001",
+      "goal": "Analyze the repository",
+      "capabilities": {
+        "filesystem": [
+          {"path": "/workspace/project", "access": "read"}
+        ],
+        "network": {"mode": "deny"},
+        "tools": ["test_runner"]
+      },
+      "budget": {
+        "wall_time_seconds": 1800,
+        "memory_bytes": 8589934592,
+        "max_parallel_agents": 1
+      },
+      "approval": {
+        "required_for": ["git.commit"]
+      }
+    }
+  }
+}
+```
+
+### Supported methods
+
+| Method | Fields | Purpose |
+| --- | --- | --- |
+| `health` | none | Check daemon responsiveness |
+| `submit` | `task` | Validate and queue a Task |
+| `get_task` | `task_id` | Read public Task state |
+| `events` | `task_id`, `after_sequence`, `limit` | Read up to 256 audit Events |
+| `start` | `task_id` | Move a queued Task to running |
+| `wait_for_approval` | `task_id` | Pause a running Task |
+| `approve` | `task_id` | Resume an approval-waiting Task |
+| `succeed` | `task_id` | Complete a running Task |
+| `fail` | `task_id` | Fail a running or approval-waiting Task |
+| `cancel` | `task_id` | Idempotently cancel a non-terminal Task |
+
+## Responses
+
+Every response declares the server's protocol version. Successful responses use `status: "ok"` and a tagged `result` object. Failures use `status: "error"` with a stable code and a non-sensitive message.
+
+```json
+{
+  "protocol_version": 1,
+  "status": "error",
+  "error": {
+    "code": "INVALID_STATE_TRANSITION",
+    "message": "requested task transition is not allowed"
+  }
+}
+```
+
+Internal I/O errors, database details, Task goals, and capability values are not included in API errors.
+
+## Command-line client
+
+`aiosctl` speaks Protocol Version 1 and prints the complete JSON response. A Task file is read with a strict 65,536-byte limit before JSON parsing.
+
+```bash
+aiosctl --socket /path/to/aiosd.sock health
+aiosctl --socket /path/to/aiosd.sock submit examples/task.json
+aiosctl --socket /path/to/aiosd.sock get TASK_ID
+aiosctl --socket /path/to/aiosd.sock events TASK_ID [AFTER_SEQUENCE] [LIMIT]
+aiosctl --socket /path/to/aiosd.sock start TASK_ID
+aiosctl --socket /path/to/aiosd.sock wait-for-approval TASK_ID
+aiosctl --socket /path/to/aiosd.sock approve TASK_ID
+aiosctl --socket /path/to/aiosd.sock succeed TASK_ID
+aiosctl --socket /path/to/aiosd.sock fail TASK_ID
+aiosctl --socket /path/to/aiosd.sock cancel TASK_ID
+```
+
+Successful API responses exit with code `0`, API errors and invalid CLI input with code `2`, and transport failures with code `1`.
+
+## Current limitations
+
+- Protocol Version 1 is experimental and does not yet carry a long-term compatibility guarantee.
+- Task input and idempotency state are not restored after daemon restart.
+- Malformed clients are isolated, but one local user can still consume time by repeatedly opening connections.
+- Graceful signal handling and stale-socket recovery are not implemented.

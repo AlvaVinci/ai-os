@@ -1,0 +1,17 @@
+[package]
+name = "aios-storage-sqlite"
+version = "0.1.0"
+description = "SQLite event persistence for AI OS"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+aios-core = { path = "../aios-core" }
+aios-runtime = { path = "../aios-runtime" }
+rusqlite.workspace = true
+serde_json.workspace = true

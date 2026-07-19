@@ -27,8 +27,11 @@ Run Tasks safely on one Linux device.
 - [x] Deterministic Task state machine.
 - [x] Idempotent submission in the synchronous Supervisor.
 - [x] Bounded append-only in-memory Event Store.
-- [ ] Long-running daemon and local API.
-- [ ] Persistent Task and Event storage.
+- [x] Persistent SQLite Event Store and event-derived state recovery.
+- [x] Experimental long-running daemon and bounded Unix-socket API.
+- [x] Experimental `aiosctl` client and versioned local API requests.
+- [ ] Stable local API compatibility contract.
+- [ ] Encrypted Task-input storage and resumable recovery.
 - [ ] Filesystem, network, and tool capability enforcement.
 - [ ] Human approval, cancellation, and timeout integration.
 - [ ] One local model adapter.

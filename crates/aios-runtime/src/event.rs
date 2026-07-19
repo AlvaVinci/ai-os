@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt::{self, Display, Formatter};
+use std::str::FromStr;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use aios_core::TaskState;
@@ -34,6 +35,14 @@ impl Display for TaskId {
     }
 }
 
+impl FromStr for TaskId {
+    type Err = uuid::Error;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Uuid::parse_str(value).map(Self)
+    }
+}
+
 /// Metadata recorded for a task lifecycle change.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct TaskEvent {
@@ -43,9 +52,29 @@ pub struct TaskEvent {
     pub kind: TaskEventKind,
 }
 
+impl TaskEvent {
+    /// Creates an event using the current wall-clock time.
+    pub fn now(
+        task_id: TaskId,
+        sequence: u64,
+        kind: TaskEventKind,
+    ) -> Result<Self, EventStoreError> {
+        if sequence == 0 {
+            return Err(EventStoreError::SequenceExhausted);
+        }
+
+        Ok(Self {
+            task_id,
+            sequence,
+            occurred_at_unix_ms: unix_time_ms(),
+            kind,
+        })
+    }
+}
+
 /// Audit-safe event payloads. Task goals and capability values are excluded.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum TaskEventKind {
     Submitted,
     StateTransitioned { from: TaskState, to: TaskState },
@@ -57,6 +86,8 @@ pub enum TaskEventKind {
 pub enum EventStoreError {
     CapacityExceeded,
     SequenceExhausted,
+    Corrupt,
+    InsecurePermissions,
     Unavailable,
 }
 
@@ -65,6 +96,8 @@ impl Display for EventStoreError {
         let message = match self {
             Self::CapacityExceeded => "event capacity exceeded",
             Self::SequenceExhausted => "event sequence exhausted",
+            Self::Corrupt => "event store data is corrupt",
+            Self::InsecurePermissions => "event store permissions are insecure",
             Self::Unavailable => "event store unavailable",
         };
         formatter.write_str(message)
@@ -139,7 +172,6 @@ impl EventStore for InMemoryEventStore {
             .map_err(|_| EventStoreError::SequenceExhausted)?
             .checked_add(1)
             .ok_or(EventStoreError::SequenceExhausted)?;
-        let occurred_at_unix_ms = unix_time_ms();
         let mut appended = Vec::with_capacity(kinds.len());
 
         for (offset, kind) in kinds.iter().enumerate() {
@@ -147,12 +179,7 @@ impl EventStore for InMemoryEventStore {
             let sequence = first_sequence
                 .checked_add(offset)
                 .ok_or(EventStoreError::SequenceExhausted)?;
-            appended.push(TaskEvent {
-                task_id,
-                sequence,
-                occurred_at_unix_ms,
-                kind: kind.clone(),
-            });
+            appended.push(TaskEvent::now(task_id, sequence, kind.clone())?);
         }
 
         self.events
