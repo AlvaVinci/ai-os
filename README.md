@@ -95,11 +95,12 @@ Implemented:
 - linear one-time approval grants that cannot be cloned, debugged, or serialized
 - policy-bound approval lifecycle with exact operation matching and audit events
 - approval invalidation on denial, expiration, cancellation, and terminal Task states
+- guarded adapter execution with complete-operation retention across approval
 
 Not implemented yet:
 
 - operating-system enforcement of capabilities
-- resource-safe approval API and execution-adapter integration
+- principal-separated approval API and concrete operating-system adapters
 - persistent Task input and resumable execution recovery
 - model and tool execution
 - resource usage enforcement and monitoring
