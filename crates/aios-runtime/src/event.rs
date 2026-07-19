@@ -4,7 +4,7 @@ use std::fmt::{self, Display, Formatter};
 use std::str::FromStr;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use aios_core::TaskState;
+use aios_core::{DenialReason, TaskState};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -77,8 +77,41 @@ impl TaskEvent {
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum TaskEventKind {
     Submitted,
-    StateTransitioned { from: TaskState, to: TaskState },
-    ValidationFailed { error_count: usize },
+    StateTransitioned {
+        from: TaskState,
+        to: TaskState,
+    },
+    ValidationFailed {
+        error_count: usize,
+    },
+    OperationAllowed,
+    OperationDenied {
+        reason: DenialReason,
+    },
+    ApprovalRequested {
+        approval_id: crate::ApprovalId,
+        operation_id: crate::OperationId,
+    },
+    ApprovalGranted {
+        approval_id: crate::ApprovalId,
+        operation_id: crate::OperationId,
+    },
+    ApprovalDenied {
+        approval_id: crate::ApprovalId,
+        operation_id: crate::OperationId,
+    },
+    ApprovalExpired {
+        approval_id: crate::ApprovalId,
+        operation_id: crate::OperationId,
+    },
+    ApprovalRevoked {
+        approval_id: crate::ApprovalId,
+        operation_id: crate::OperationId,
+    },
+    ApprovalConsumed {
+        approval_id: crate::ApprovalId,
+        operation_id: crate::OperationId,
+    },
 }
 
 /// Event persistence failure without leaking backend details to API callers.

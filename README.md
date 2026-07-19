@@ -87,17 +87,19 @@ Implemented:
 - audit-first state changes that leave task state unchanged when event storage fails
 - `aiosd` with a bounded, owner-only Unix-socket API
 - one-request-per-connection framing, timeouts, and event pagination
-- Protocol Version 1 with explicit incompatible-version rejection
+- Protocol Version 2 with explicit incompatible-version rejection
 - `aiosctl` for task submission, inspection, events, and lifecycle transitions
 - deterministic filesystem, network, and tool capability policy decisions
 - fail-closed authorization with resource-free denial and approval results
 - bounded, expiring, task-operation-action-scoped approval requests
 - linear one-time approval grants that cannot be cloned, debugged, or serialized
+- policy-bound approval lifecycle with exact operation matching and audit events
+- approval invalidation on denial, expiration, cancellation, and terminal Task states
 
 Not implemented yet:
 
 - operating-system enforcement of capabilities
-- approval API, audit-event, and execution-adapter integration
+- resource-safe approval API and execution-adapter integration
 - persistent Task input and resumable execution recovery
 - model and tool execution
 - resource usage enforcement and monitoring
@@ -135,7 +137,7 @@ cargo run -p aios-local-api --bin aiosctl -- \
   --socket "$runtime_dir/aiosd.sock" submit examples/task.json
 ```
 
-The local API uses Protocol Version 1, but remains experimental and has no stable compatibility guarantee yet. See [Local API](docs/local-api.md) for the protocol and security boundaries.
+The local API uses Protocol Version 2, but remains experimental and has no stable compatibility guarantee yet. See [Local API](docs/local-api.md) for the protocol and security boundaries.
 
 ## Contributing
 

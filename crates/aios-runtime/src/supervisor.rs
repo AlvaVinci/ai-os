@@ -1,16 +1,86 @@
 use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt::{self, Display, Formatter};
+use std::time::Duration;
 
-use aios_core::{StateTransitionError, TaskSpec, TaskState, ValidationErrors};
+use aios_core::{
+    CapabilityPolicy, CapabilityRequest, DenialReason, FileAccess, PolicyDecision,
+    StateTransitionError, TaskSpec, TaskState, ValidationErrors,
+};
 
-use crate::{EventStore, EventStoreError, InMemoryEventStore, TaskEvent, TaskEventKind, TaskId};
+use crate::{
+    ApprovalAuthority, ApprovalError, ApprovalGrant, ApprovalId, ApprovalReceipt, ApprovalRequest,
+    EventStore, EventStoreError, InMemoryEventStore, OperationId, TaskEvent, TaskEventKind, TaskId,
+};
 
 const DEFAULT_MAX_TASKS: usize = 10_000;
 
 struct TaskRecord {
     spec: TaskSpec,
     state: TaskState,
+}
+
+#[derive(Eq, PartialEq)]
+enum OwnedCapabilityRequest {
+    File { path: String, access: FileAccess },
+    Network { host: String },
+    Tool { tool: String, action: String },
+}
+
+impl OwnedCapabilityRequest {
+    fn from_borrowed(request: CapabilityRequest<'_>) -> Self {
+        match request {
+            CapabilityRequest::File { path, access } => Self::File {
+                path: path.to_owned(),
+                access,
+            },
+            CapabilityRequest::Network { host } => Self::Network {
+                host: host.to_owned(),
+            },
+            CapabilityRequest::Tool { tool, action } => Self::Tool {
+                tool: tool.to_owned(),
+                action: action.to_owned(),
+            },
+        }
+    }
+
+    fn as_borrowed(&self) -> CapabilityRequest<'_> {
+        match self {
+            Self::File { path, access } => CapabilityRequest::File {
+                path,
+                access: *access,
+            },
+            Self::Network { host } => CapabilityRequest::Network { host },
+            Self::Tool { tool, action } => CapabilityRequest::Tool { tool, action },
+        }
+    }
+
+    fn action(&self) -> &str {
+        match self {
+            Self::File {
+                access: FileAccess::Read,
+                ..
+            } => "filesystem.read",
+            Self::File {
+                access: FileAccess::Write,
+                ..
+            } => "filesystem.write",
+            Self::Network { .. } => "network.egress",
+            Self::Tool { action, .. } => action,
+        }
+    }
+}
+
+struct PendingOperation {
+    task_id: TaskId,
+    operation_id: OperationId,
+    request: OwnedCapabilityRequest,
+}
+
+struct ApprovedOperation {
+    task_id: TaskId,
+    request: OwnedCapabilityRequest,
+    grant: ApprovalGrant,
 }
 
 /// Public, non-sensitive task state returned by the supervisor.
@@ -31,24 +101,36 @@ pub enum SubmitResult {
     },
 }
 
+/// Resource-free result of evaluating an operation for one running task.
+#[derive(Debug)]
+pub enum OperationAuthorization {
+    Allowed,
+    Denied { reason: DenialReason },
+    ApprovalRequired(ApprovalRequest),
+}
+
 /// Supervisor operation failure.
 #[derive(Debug)]
 pub enum SupervisorError {
     TaskNotFound,
+    TaskNotRunning,
     IdempotencyConflict,
     CapacityExceeded,
     InvalidStateTransition(StateTransitionError),
     EventStore(EventStoreError),
+    Approval(ApprovalError),
 }
 
 impl Display for SupervisorError {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
         match self {
             Self::TaskNotFound => formatter.write_str("task not found"),
+            Self::TaskNotRunning => formatter.write_str("task is not running"),
             Self::IdempotencyConflict => formatter.write_str("idempotency key conflict"),
             Self::CapacityExceeded => formatter.write_str("task capacity exceeded"),
             Self::InvalidStateTransition(error) => Display::fmt(error, formatter),
             Self::EventStore(error) => Display::fmt(error, formatter),
+            Self::Approval(error) => Display::fmt(error, formatter),
         }
     }
 }
@@ -58,7 +140,11 @@ impl Error for SupervisorError {
         match self {
             Self::InvalidStateTransition(error) => Some(error),
             Self::EventStore(error) => Some(error),
-            Self::TaskNotFound | Self::IdempotencyConflict | Self::CapacityExceeded => None,
+            Self::Approval(error) => Some(error),
+            Self::TaskNotFound
+            | Self::TaskNotRunning
+            | Self::IdempotencyConflict
+            | Self::CapacityExceeded => None,
         }
     }
 }
@@ -75,11 +161,20 @@ impl From<EventStoreError> for SupervisorError {
     }
 }
 
+impl From<ApprovalError> for SupervisorError {
+    fn from(error: ApprovalError) -> Self {
+        Self::Approval(error)
+    }
+}
+
 /// Coordinates validated tasks and records every accepted state change.
 pub struct TaskSupervisor<S = InMemoryEventStore> {
     tasks: BTreeMap<TaskId, TaskRecord>,
     idempotency_index: BTreeMap<String, TaskId>,
     event_store: S,
+    approval_authority: ApprovalAuthority,
+    pending_operations: BTreeMap<ApprovalId, PendingOperation>,
+    approved_operations: BTreeMap<OperationId, ApprovedOperation>,
     max_tasks: usize,
 }
 
@@ -96,6 +191,9 @@ impl<S: EventStore> TaskSupervisor<S> {
             tasks: BTreeMap::new(),
             idempotency_index: BTreeMap::new(),
             event_store,
+            approval_authority: ApprovalAuthority::default(),
+            pending_operations: BTreeMap::new(),
+            approved_operations: BTreeMap::new(),
             max_tasks: DEFAULT_MAX_TASKS,
         }
     }
@@ -109,6 +207,9 @@ impl<S: EventStore> TaskSupervisor<S> {
             tasks: BTreeMap::new(),
             idempotency_index: BTreeMap::new(),
             event_store,
+            approval_authority: ApprovalAuthority::default(),
+            pending_operations: BTreeMap::new(),
+            approved_operations: BTreeMap::new(),
             max_tasks,
         })
     }
@@ -192,12 +293,288 @@ impl<S: EventStore> TaskSupervisor<S> {
         self.transition(task_id, TaskState::Running)
     }
 
-    pub fn wait_for_approval(&mut self, task_id: TaskId) -> Result<(), SupervisorError> {
-        self.transition(task_id, TaskState::WaitingApproval)
+    /// Evaluates one exact operation and records the decision before returning it.
+    pub fn request_operation(
+        &mut self,
+        task_id: TaskId,
+        request: CapabilityRequest<'_>,
+        approval_ttl: Duration,
+    ) -> Result<OperationAuthorization, SupervisorError> {
+        self.expire_approvals()?;
+        let current = self
+            .tasks
+            .get(&task_id)
+            .ok_or(SupervisorError::TaskNotFound)?
+            .state;
+        let mut proposed = current;
+        proposed.transition_to(TaskState::WaitingApproval)?;
+
+        let owned_request = OwnedCapabilityRequest::from_borrowed(request);
+        let decision = {
+            let record = self
+                .tasks
+                .get(&task_id)
+                .ok_or(SupervisorError::TaskNotFound)?;
+            CapabilityPolicy::from_task(&record.spec)
+                .expect("stored task specifications must remain valid")
+                .evaluate(owned_request.as_borrowed())
+        };
+
+        match decision {
+            PolicyDecision::Allow => {
+                self.event_store
+                    .append_batch(task_id, &[TaskEventKind::OperationAllowed])?;
+                Ok(OperationAuthorization::Allowed)
+            }
+            PolicyDecision::Deny { reason } => {
+                self.event_store
+                    .append_batch(task_id, &[TaskEventKind::OperationDenied { reason }])?;
+                Ok(OperationAuthorization::Denied { reason })
+            }
+            PolicyDecision::ApprovalRequired => {
+                if self
+                    .pending_operations
+                    .values()
+                    .any(|pending| pending.task_id == task_id)
+                {
+                    return Err(ApprovalError::DuplicateOperation.into());
+                }
+
+                let operation_id = OperationId::new();
+                let approval = self.approval_authority.request(
+                    task_id,
+                    operation_id,
+                    owned_request.action(),
+                    approval_ttl,
+                )?;
+                let event_kinds = [
+                    TaskEventKind::ApprovalRequested {
+                        approval_id: approval.approval_id,
+                        operation_id,
+                    },
+                    TaskEventKind::StateTransitioned {
+                        from: current,
+                        to: TaskState::WaitingApproval,
+                    },
+                ];
+                if let Err(error) = self.event_store.append_batch(task_id, &event_kinds) {
+                    let _ = self.approval_authority.revoke(approval.approval_id);
+                    return Err(error.into());
+                }
+
+                self.pending_operations.insert(
+                    approval.approval_id,
+                    PendingOperation {
+                        task_id,
+                        operation_id,
+                        request: owned_request,
+                    },
+                );
+                self.tasks
+                    .get_mut(&task_id)
+                    .ok_or(SupervisorError::TaskNotFound)?
+                    .state = TaskState::WaitingApproval;
+                Ok(OperationAuthorization::ApprovalRequired(approval))
+            }
+        }
     }
 
-    pub fn resume_after_approval(&mut self, task_id: TaskId) -> Result<(), SupervisorError> {
-        self.transition(task_id, TaskState::Running)
+    /// Grants one pending operation and resumes its task only after audit persistence succeeds.
+    pub fn approve_operation(
+        &mut self,
+        approval_id: ApprovalId,
+    ) -> Result<TaskSnapshot, SupervisorError> {
+        self.expire_approvals()?;
+        let pending = self
+            .pending_operations
+            .get(&approval_id)
+            .ok_or(ApprovalError::NotFound)?;
+        let task_id = pending.task_id;
+        let operation_id = pending.operation_id;
+        let current = self
+            .tasks
+            .get(&task_id)
+            .ok_or(SupervisorError::TaskNotFound)?
+            .state;
+        let mut proposed = current;
+        proposed.transition_to(TaskState::Running)?;
+
+        let grant = self.approval_authority.approve(approval_id)?;
+        let event_kinds = [
+            TaskEventKind::ApprovalGranted {
+                approval_id,
+                operation_id,
+            },
+            TaskEventKind::StateTransitioned {
+                from: current,
+                to: TaskState::Running,
+            },
+        ];
+        if let Err(error) = self.event_store.append_batch(task_id, &event_kinds) {
+            grant.restore(&mut self.approval_authority);
+            return Err(error.into());
+        }
+
+        let pending = self
+            .pending_operations
+            .remove(&approval_id)
+            .ok_or(ApprovalError::NotFound)?;
+        self.approved_operations.insert(
+            operation_id,
+            ApprovedOperation {
+                task_id,
+                request: pending.request,
+                grant,
+            },
+        );
+        self.tasks
+            .get_mut(&task_id)
+            .ok_or(SupervisorError::TaskNotFound)?
+            .state = TaskState::Running;
+        Ok(TaskSnapshot {
+            task_id,
+            state: TaskState::Running,
+        })
+    }
+
+    /// Denies one pending operation and fails its task.
+    pub fn deny_operation(
+        &mut self,
+        approval_id: ApprovalId,
+    ) -> Result<TaskSnapshot, SupervisorError> {
+        self.expire_approvals()?;
+        let pending = self
+            .pending_operations
+            .get(&approval_id)
+            .ok_or(ApprovalError::NotFound)?;
+        let task_id = pending.task_id;
+        let operation_id = pending.operation_id;
+        if !self.approval_authority.contains(approval_id) {
+            return Err(ApprovalError::NotFound.into());
+        }
+        let current = self
+            .tasks
+            .get(&task_id)
+            .ok_or(SupervisorError::TaskNotFound)?
+            .state;
+        let mut proposed = current;
+        proposed.transition_to(TaskState::Failed)?;
+
+        self.event_store.append_batch(
+            task_id,
+            &[
+                TaskEventKind::ApprovalDenied {
+                    approval_id,
+                    operation_id,
+                },
+                TaskEventKind::StateTransitioned {
+                    from: current,
+                    to: TaskState::Failed,
+                },
+            ],
+        )?;
+        let _ = self.approval_authority.revoke(approval_id);
+        self.pending_operations.remove(&approval_id);
+        self.tasks
+            .get_mut(&task_id)
+            .ok_or(SupervisorError::TaskNotFound)?
+            .state = TaskState::Failed;
+        Ok(TaskSnapshot {
+            task_id,
+            state: TaskState::Failed,
+        })
+    }
+
+    /// Consumes the approved operation only when the full resource request still matches.
+    pub fn authorize_operation(
+        &mut self,
+        task_id: TaskId,
+        operation_id: OperationId,
+        request: CapabilityRequest<'_>,
+    ) -> Result<ApprovalReceipt, SupervisorError> {
+        let current = self
+            .tasks
+            .get(&task_id)
+            .ok_or(SupervisorError::TaskNotFound)?
+            .state;
+        if current != TaskState::Running {
+            return Err(SupervisorError::TaskNotRunning);
+        }
+
+        let supplied = OwnedCapabilityRequest::from_borrowed(request);
+        let approved = self
+            .approved_operations
+            .remove(&operation_id)
+            .ok_or(ApprovalError::NotFound)?;
+        if approved.task_id != task_id || approved.request != supplied {
+            return Err(ApprovalError::ScopeMismatch.into());
+        }
+        let decision = {
+            let record = self
+                .tasks
+                .get(&task_id)
+                .ok_or(SupervisorError::TaskNotFound)?;
+            CapabilityPolicy::from_task(&record.spec)
+                .expect("stored task specifications must remain valid")
+                .evaluate(supplied.as_borrowed())
+        };
+        if decision != PolicyDecision::ApprovalRequired {
+            return Err(ApprovalError::ScopeMismatch.into());
+        }
+
+        let approval_id = approved.grant.approval_id();
+        let receipt = approved
+            .grant
+            .authorize(task_id, operation_id, supplied.action())?;
+        self.event_store.append_batch(
+            task_id,
+            &[TaskEventKind::ApprovalConsumed {
+                approval_id,
+                operation_id,
+            }],
+        )?;
+        Ok(receipt)
+    }
+
+    /// Expires pending requests and fails their waiting tasks after audit persistence succeeds.
+    pub fn expire_approvals(&mut self) -> Result<usize, SupervisorError> {
+        let expired = self.approval_authority.expired_ids();
+        let mut expired_count = 0;
+        for approval_id in expired {
+            let Some(pending) = self.pending_operations.get(&approval_id) else {
+                continue;
+            };
+            let task_id = pending.task_id;
+            let operation_id = pending.operation_id;
+            let current = self
+                .tasks
+                .get(&task_id)
+                .ok_or(SupervisorError::TaskNotFound)?
+                .state;
+            let mut proposed = current;
+            proposed.transition_to(TaskState::Failed)?;
+            self.event_store.append_batch(
+                task_id,
+                &[
+                    TaskEventKind::ApprovalExpired {
+                        approval_id,
+                        operation_id,
+                    },
+                    TaskEventKind::StateTransitioned {
+                        from: current,
+                        to: TaskState::Failed,
+                    },
+                ],
+            )?;
+            let _ = self.approval_authority.revoke(approval_id);
+            self.pending_operations.remove(&approval_id);
+            self.tasks
+                .get_mut(&task_id)
+                .ok_or(SupervisorError::TaskNotFound)?
+                .state = TaskState::Failed;
+            expired_count += 1;
+        }
+        Ok(expired_count)
     }
 
     pub fn succeed(&mut self, task_id: TaskId) -> Result<(), SupervisorError> {
@@ -252,13 +629,19 @@ impl<S: EventStore> TaskSupervisor<S> {
         current: TaskState,
         next: TaskState,
     ) -> Result<(), SupervisorError> {
-        self.event_store.append_batch(
-            task_id,
-            &[TaskEventKind::StateTransitioned {
-                from: current,
-                to: next,
-            }],
-        )?;
+        let mut event_kinds = Vec::new();
+        if next.is_terminal() {
+            event_kinds.extend(self.revocation_events(task_id));
+        }
+        event_kinds.push(TaskEventKind::StateTransitioned {
+            from: current,
+            to: next,
+        });
+        self.event_store.append_batch(task_id, &event_kinds)?;
+
+        if next.is_terminal() {
+            self.invalidate_approvals(task_id);
+        }
 
         let record = self
             .tasks
@@ -267,16 +650,56 @@ impl<S: EventStore> TaskSupervisor<S> {
         record.state = next;
         Ok(())
     }
+
+    fn revocation_events(&self, task_id: TaskId) -> Vec<TaskEventKind> {
+        let pending = self
+            .pending_operations
+            .iter()
+            .filter_map(|(approval_id, operation)| {
+                (operation.task_id == task_id).then_some(TaskEventKind::ApprovalRevoked {
+                    approval_id: *approval_id,
+                    operation_id: operation.operation_id,
+                })
+            });
+        let approved = self
+            .approved_operations
+            .iter()
+            .filter_map(|(operation_id, operation)| {
+                (operation.task_id == task_id).then_some(TaskEventKind::ApprovalRevoked {
+                    approval_id: operation.grant.approval_id(),
+                    operation_id: *operation_id,
+                })
+            });
+        pending.chain(approved).collect()
+    }
+
+    fn invalidate_approvals(&mut self, task_id: TaskId) {
+        let pending_ids: Vec<ApprovalId> = self
+            .pending_operations
+            .iter()
+            .filter_map(|(approval_id, operation)| {
+                (operation.task_id == task_id).then_some(*approval_id)
+            })
+            .collect();
+        for approval_id in pending_ids {
+            let _ = self.approval_authority.revoke(approval_id);
+            self.pending_operations.remove(&approval_id);
+        }
+        self.approved_operations
+            .retain(|_, operation| operation.task_id != task_id);
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use aios_core::{
-        ApprovalPolicy, Budget, CapabilitySet, FileAccess, FileCapability, NetworkPolicy, TaskSpec,
-        TaskState,
+        ApprovalPolicy, Budget, CapabilityRequest, CapabilitySet, FileAccess, FileCapability,
+        NetworkPolicy, TaskSpec, TaskState,
     };
 
-    use super::{SubmitResult, SupervisorError, TaskSupervisor};
+    use super::{OperationAuthorization, SubmitResult, SupervisorError, TaskSupervisor};
     use crate::{InMemoryEventStore, TaskEventKind};
 
     fn valid_task() -> TaskSpec {
@@ -385,19 +808,211 @@ mod tests {
         let task_id = accepted_task_id(supervisor.submit(valid_task()).expect("submit task"));
 
         supervisor.start(task_id).expect("start task");
+        let authorization = supervisor
+            .request_operation(
+                task_id,
+                CapabilityRequest::Tool {
+                    tool: "test_runner",
+                    action: "git.commit",
+                },
+                Duration::from_secs(30),
+            )
+            .expect("request operation");
+        let OperationAuthorization::ApprovalRequired(request) = authorization else {
+            panic!("expected approval request");
+        };
         supervisor
-            .wait_for_approval(task_id)
-            .expect("wait for approval");
+            .approve_operation(request.approval_id)
+            .expect("approve operation");
         supervisor
-            .resume_after_approval(task_id)
-            .expect("resume task");
+            .authorize_operation(
+                task_id,
+                request.operation_id,
+                CapabilityRequest::Tool {
+                    tool: "test_runner",
+                    action: "git.commit",
+                },
+            )
+            .expect("consume approval");
         supervisor.succeed(task_id).expect("succeed task");
 
         assert_eq!(
             supervisor.get(task_id).expect("task exists").state,
             TaskState::Succeeded
         );
-        assert_eq!(supervisor.events(task_id, 0).expect("events").len(), 7);
+        assert_eq!(supervisor.events(task_id, 0).expect("events").len(), 10);
+    }
+
+    #[test]
+    fn denial_fails_task_and_cannot_be_reused() {
+        let mut supervisor = TaskSupervisor::default();
+        let task_id = accepted_task_id(supervisor.submit(valid_task()).expect("submit task"));
+        supervisor.start(task_id).expect("start task");
+        let OperationAuthorization::ApprovalRequired(request) = supervisor
+            .request_operation(
+                task_id,
+                CapabilityRequest::Tool {
+                    tool: "test_runner",
+                    action: "git.commit",
+                },
+                Duration::from_secs(30),
+            )
+            .expect("request operation")
+        else {
+            panic!("expected approval request");
+        };
+
+        let task = supervisor
+            .deny_operation(request.approval_id)
+            .expect("deny operation");
+
+        assert_eq!(task.state, TaskState::Failed);
+        assert!(matches!(
+            supervisor.approve_operation(request.approval_id),
+            Err(SupervisorError::Approval(crate::ApprovalError::NotFound))
+        ));
+    }
+
+    #[test]
+    fn exact_resource_mismatch_consumes_linear_grant() {
+        let mut spec = valid_task();
+        spec.capabilities.filesystem[0].access = FileAccess::Write;
+        spec.approval.required_for = vec!["filesystem.write".to_owned()];
+        let mut supervisor = TaskSupervisor::default();
+        let task_id = accepted_task_id(supervisor.submit(spec).expect("submit task"));
+        supervisor.start(task_id).expect("start task");
+        let OperationAuthorization::ApprovalRequired(request) = supervisor
+            .request_operation(
+                task_id,
+                CapabilityRequest::File {
+                    path: "/workspace/project/a.txt",
+                    access: FileAccess::Write,
+                },
+                Duration::from_secs(30),
+            )
+            .expect("request operation")
+        else {
+            panic!("expected approval request");
+        };
+        supervisor
+            .approve_operation(request.approval_id)
+            .expect("approve operation");
+
+        assert!(matches!(
+            supervisor.authorize_operation(
+                task_id,
+                request.operation_id,
+                CapabilityRequest::File {
+                    path: "/workspace/project/b.txt",
+                    access: FileAccess::Write,
+                },
+            ),
+            Err(SupervisorError::Approval(
+                crate::ApprovalError::ScopeMismatch
+            ))
+        ));
+        assert!(matches!(
+            supervisor.authorize_operation(
+                task_id,
+                request.operation_id,
+                CapabilityRequest::File {
+                    path: "/workspace/project/a.txt",
+                    access: FileAccess::Write,
+                },
+            ),
+            Err(SupervisorError::Approval(crate::ApprovalError::NotFound))
+        ));
+    }
+
+    #[test]
+    fn cancellation_revokes_pending_approval() {
+        let mut supervisor = TaskSupervisor::default();
+        let task_id = accepted_task_id(supervisor.submit(valid_task()).expect("submit task"));
+        supervisor.start(task_id).expect("start task");
+        let OperationAuthorization::ApprovalRequired(request) = supervisor
+            .request_operation(
+                task_id,
+                CapabilityRequest::Tool {
+                    tool: "test_runner",
+                    action: "git.commit",
+                },
+                Duration::from_secs(30),
+            )
+            .expect("request operation")
+        else {
+            panic!("expected approval request");
+        };
+
+        assert!(supervisor.cancel(task_id).expect("cancel task"));
+        assert!(matches!(
+            supervisor.approve_operation(request.approval_id),
+            Err(SupervisorError::Approval(crate::ApprovalError::NotFound))
+        ));
+        assert!(
+            supervisor
+                .events(task_id, 0)
+                .expect("events")
+                .iter()
+                .any(|event| matches!(event.kind, TaskEventKind::ApprovalRevoked { .. }))
+        );
+    }
+
+    #[test]
+    fn approval_request_rolls_back_when_audit_batch_fails() {
+        let store = InMemoryEventStore::new(5).expect("positive capacity");
+        let mut supervisor = TaskSupervisor::new(store);
+        let task_id = accepted_task_id(supervisor.submit(valid_task()).expect("submit task"));
+        supervisor.start(task_id).expect("start task");
+
+        for _ in 0..2 {
+            assert!(matches!(
+                supervisor.request_operation(
+                    task_id,
+                    CapabilityRequest::Tool {
+                        tool: "test_runner",
+                        action: "git.commit",
+                    },
+                    Duration::from_secs(30),
+                ),
+                Err(SupervisorError::EventStore(_))
+            ));
+        }
+        assert_eq!(
+            supervisor.get(task_id).expect("task exists").state,
+            TaskState::Running
+        );
+    }
+
+    #[test]
+    fn approval_grant_rolls_back_when_audit_batch_fails() {
+        let store = InMemoryEventStore::new(7).expect("positive capacity");
+        let mut supervisor = TaskSupervisor::new(store);
+        let task_id = accepted_task_id(supervisor.submit(valid_task()).expect("submit task"));
+        supervisor.start(task_id).expect("start task");
+        let OperationAuthorization::ApprovalRequired(request) = supervisor
+            .request_operation(
+                task_id,
+                CapabilityRequest::Tool {
+                    tool: "test_runner",
+                    action: "git.commit",
+                },
+                Duration::from_secs(30),
+            )
+            .expect("request operation")
+        else {
+            panic!("expected approval request");
+        };
+
+        for _ in 0..2 {
+            assert!(matches!(
+                supervisor.approve_operation(request.approval_id),
+                Err(SupervisorError::EventStore(_))
+            ));
+        }
+        assert_eq!(
+            supervisor.get(task_id).expect("task exists").state,
+            TaskState::WaitingApproval
+        );
     }
 
     #[test]

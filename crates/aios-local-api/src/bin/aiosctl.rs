@@ -12,7 +12,8 @@ use aios_local_api::{
 };
 use aios_runtime::TaskId;
 
-const USAGE: &str = "usage: aiosctl --socket PATH <health|submit|get|events|start|wait-for-approval|approve|succeed|fail|cancel> [ARGUMENTS]";
+const USAGE: &str =
+    "usage: aiosctl --socket PATH <health|submit|get|events|start|succeed|fail|cancel> [ARGUMENTS]";
 
 fn main() -> ExitCode {
     match run(std::env::args().skip(1)) {
@@ -85,8 +86,6 @@ enum Command {
         limit: u16,
     },
     Start(TaskId),
-    WaitForApproval(TaskId),
-    Approve(TaskId),
     Succeed(TaskId),
     Fail(TaskId),
     Cancel(TaskId),
@@ -114,8 +113,6 @@ impl Command {
                 limit: parse_number(limit)?,
             }),
             ("start", [task_id]) => Ok(Self::Start(parse_task_id(task_id)?)),
-            ("wait-for-approval", [task_id]) => Ok(Self::WaitForApproval(parse_task_id(task_id)?)),
-            ("approve", [task_id]) => Ok(Self::Approve(parse_task_id(task_id)?)),
             ("succeed", [task_id]) => Ok(Self::Succeed(parse_task_id(task_id)?)),
             ("fail", [task_id]) => Ok(Self::Fail(parse_task_id(task_id)?)),
             ("cancel", [task_id]) => Ok(Self::Cancel(parse_task_id(task_id)?)),
@@ -140,8 +137,6 @@ impl Command {
                 limit,
             },
             Self::Start(task_id) => ApiMethod::Start { task_id },
-            Self::WaitForApproval(task_id) => ApiMethod::WaitForApproval { task_id },
-            Self::Approve(task_id) => ApiMethod::Approve { task_id },
             Self::Succeed(task_id) => ApiMethod::Succeed { task_id },
             Self::Fail(task_id) => ApiMethod::Fail { task_id },
             Self::Cancel(task_id) => ApiMethod::Cancel { task_id },

@@ -14,4 +14,6 @@ pub use approval::{
 pub use event::{
     EventStore, EventStoreError, InMemoryEventStore, TaskEvent, TaskEventKind, TaskId,
 };
-pub use supervisor::{SubmitResult, SupervisorError, TaskSnapshot, TaskSupervisor};
+pub use supervisor::{
+    OperationAuthorization, SubmitResult, SupervisorError, TaskSnapshot, TaskSupervisor,
+};

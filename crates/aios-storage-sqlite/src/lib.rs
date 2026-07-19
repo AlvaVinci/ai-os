@@ -272,9 +272,27 @@ fn recover_snapshot(
                 state = Some(to);
             }
             TaskEventKind::ValidationFailed { .. } if state == Some(TaskState::Validating) => {}
+            TaskEventKind::OperationAllowed | TaskEventKind::OperationDenied { .. }
+                if state == Some(TaskState::Running) => {}
+            TaskEventKind::ApprovalRequested { .. } if state == Some(TaskState::Running) => {}
+            TaskEventKind::ApprovalGranted { .. }
+            | TaskEventKind::ApprovalDenied { .. }
+            | TaskEventKind::ApprovalExpired { .. }
+                if state == Some(TaskState::WaitingApproval) => {}
+            TaskEventKind::ApprovalRevoked { .. }
+                if matches!(state, Some(TaskState::Running | TaskState::WaitingApproval)) => {}
+            TaskEventKind::ApprovalConsumed { .. } if state == Some(TaskState::Running) => {}
             TaskEventKind::Submitted
             | TaskEventKind::StateTransitioned { .. }
-            | TaskEventKind::ValidationFailed { .. } => return Err(EventStoreError::Corrupt),
+            | TaskEventKind::ValidationFailed { .. }
+            | TaskEventKind::OperationAllowed
+            | TaskEventKind::OperationDenied { .. }
+            | TaskEventKind::ApprovalRequested { .. }
+            | TaskEventKind::ApprovalGranted { .. }
+            | TaskEventKind::ApprovalDenied { .. }
+            | TaskEventKind::ApprovalExpired { .. }
+            | TaskEventKind::ApprovalRevoked { .. }
+            | TaskEventKind::ApprovalConsumed { .. } => return Err(EventStoreError::Corrupt),
         }
     }
 
@@ -313,12 +331,15 @@ fn prepare_database_file(path: &Path) -> Result<(), EventStoreError> {
 mod tests {
     use std::fs;
     use std::path::{Path, PathBuf};
+    use std::time::Duration;
 
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
 
     use aios_core::TaskState;
-    use aios_runtime::{EventStore, EventStoreError, TaskEventKind, TaskId};
+    use aios_runtime::{
+        ApprovalAuthority, EventStore, EventStoreError, OperationId, TaskEventKind, TaskId,
+    };
     use rusqlite::params;
 
     use super::SqliteEventStore;
@@ -417,6 +438,57 @@ mod tests {
                 .iter()
                 .any(|task| { task.task_id == running_task && task.state == TaskState::Running })
         );
+    }
+
+    #[test]
+    fn recovers_state_across_resource_free_approval_events() {
+        let mut store = SqliteEventStore::open_in_memory(100).expect("open database");
+        let task_id = TaskId::new();
+        let operation_id = OperationId::new();
+        let mut authority = ApprovalAuthority::default();
+        let approval = authority
+            .request(task_id, operation_id, "git.commit", Duration::from_secs(30))
+            .expect("request approval");
+        let mut events = queued_events().to_vec();
+        events.extend([
+            TaskEventKind::StateTransitioned {
+                from: TaskState::Queued,
+                to: TaskState::Running,
+            },
+            TaskEventKind::ApprovalRequested {
+                approval_id: approval.approval_id,
+                operation_id,
+            },
+            TaskEventKind::StateTransitioned {
+                from: TaskState::Running,
+                to: TaskState::WaitingApproval,
+            },
+            TaskEventKind::ApprovalGranted {
+                approval_id: approval.approval_id,
+                operation_id,
+            },
+            TaskEventKind::StateTransitioned {
+                from: TaskState::WaitingApproval,
+                to: TaskState::Running,
+            },
+            TaskEventKind::ApprovalConsumed {
+                approval_id: approval.approval_id,
+                operation_id,
+            },
+            TaskEventKind::StateTransitioned {
+                from: TaskState::Running,
+                to: TaskState::Succeeded,
+            },
+        ]);
+        store
+            .append_batch(task_id, &events)
+            .expect("append approval lifecycle");
+
+        let snapshots = store.recover_task_snapshots().expect("recover tasks");
+
+        assert_eq!(snapshots.len(), 1);
+        assert_eq!(snapshots[0].task_id, task_id);
+        assert_eq!(snapshots[0].state, TaskState::Succeeded);
     }
 
     #[test]

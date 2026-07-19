@@ -2,7 +2,9 @@
 
 ## Status
 
-Experimental Protocol Version 1. The version number is explicit, but the framing and schema may still change before the first stable release.
+Experimental Protocol Version 2. The version number is explicit, but the framing and schema may still change before the first stable release.
+
+Version 2 removes the Version 1 `wait_for_approval` and `approve` methods. Those methods changed Task state using only a Task ID and were not bound to a policy-evaluated operation. Approval remains available through the trusted runtime API until a resource-safe local API schema is defined.
 
 ## Transport
 
@@ -32,19 +34,19 @@ These checks restrict access to the local operating-system user. Explicit peer-c
 
 ## Requests
 
-Every request uses an envelope with `protocol_version` and a tagged `request` object. Protocol Version 1 is the only supported version. Missing, unknown, or unsupported versions are rejected; unknown fields are also rejected.
+Every request uses an envelope with `protocol_version` and a tagged `request` object. Protocol Version 2 is the only supported version. Missing, unknown, or unsupported versions are rejected; unknown fields are also rejected.
 
 ### Health
 
 ```json
-{"protocol_version":1,"request":{"method":"health"}}
+{"protocol_version":2,"request":{"method":"health"}}
 ```
 
 ### Submit
 
 ```json
 {
-  "protocol_version": 1,
+  "protocol_version": 2,
   "request": {
     "method": "submit",
     "task": {
@@ -79,8 +81,6 @@ Every request uses an envelope with `protocol_version` and a tagged `request` ob
 | `get_task` | `task_id` | Read public Task state |
 | `events` | `task_id`, `after_sequence`, `limit` | Read up to 256 audit Events |
 | `start` | `task_id` | Move a queued Task to running |
-| `wait_for_approval` | `task_id` | Pause a running Task |
-| `approve` | `task_id` | Resume an approval-waiting Task |
 | `succeed` | `task_id` | Complete a running Task |
 | `fail` | `task_id` | Fail a running or approval-waiting Task |
 | `cancel` | `task_id` | Idempotently cancel a non-terminal Task |
@@ -91,7 +91,7 @@ Every response declares the server's protocol version. Successful responses use 
 
 ```json
 {
-  "protocol_version": 1,
+  "protocol_version": 2,
   "status": "error",
   "error": {
     "code": "INVALID_STATE_TRANSITION",
@@ -104,7 +104,7 @@ Internal I/O errors, database details, Task goals, and capability values are not
 
 ## Command-line client
 
-`aiosctl` speaks Protocol Version 1 and prints the complete JSON response. A Task file is read with a strict 65,536-byte limit before JSON parsing.
+`aiosctl` speaks Protocol Version 2 and prints the complete JSON response. A Task file is read with a strict 65,536-byte limit before JSON parsing.
 
 ```bash
 aiosctl --socket /path/to/aiosd.sock health
@@ -112,8 +112,6 @@ aiosctl --socket /path/to/aiosd.sock submit examples/task.json
 aiosctl --socket /path/to/aiosd.sock get TASK_ID
 aiosctl --socket /path/to/aiosd.sock events TASK_ID [AFTER_SEQUENCE] [LIMIT]
 aiosctl --socket /path/to/aiosd.sock start TASK_ID
-aiosctl --socket /path/to/aiosd.sock wait-for-approval TASK_ID
-aiosctl --socket /path/to/aiosd.sock approve TASK_ID
 aiosctl --socket /path/to/aiosd.sock succeed TASK_ID
 aiosctl --socket /path/to/aiosd.sock fail TASK_ID
 aiosctl --socket /path/to/aiosd.sock cancel TASK_ID
@@ -123,7 +121,8 @@ Successful API responses exit with code `0`, API errors and invalid CLI input wi
 
 ## Current limitations
 
-- Protocol Version 1 is experimental and does not yet carry a long-term compatibility guarantee.
+- Protocol Version 2 is experimental and does not yet carry a long-term compatibility guarantee.
+- Policy-bound approval requests are not exposed through the local API yet.
 - Task input and idempotency state are not restored after daemon restart.
 - Malformed clients are isolated, but one local user can still consume time by repeatedly opening connections.
 - Graceful signal handling and stale-socket recovery are not implemented.

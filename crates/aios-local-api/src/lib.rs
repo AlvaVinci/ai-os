@@ -23,7 +23,7 @@ use serde::{Deserialize, Serialize};
 pub const DEFAULT_MAX_FRAME_BYTES: usize = 64 * 1024;
 pub const DEFAULT_EVENT_PAGE_SIZE: u16 = 100;
 pub const MAX_EVENT_PAGE_SIZE: u16 = 256;
-pub const PROTOCOL_VERSION: u16 = 1;
+pub const PROTOCOL_VERSION: u16 = 2;
 const MIN_MAX_FRAME_BYTES: usize = 1024;
 const MAX_MAX_FRAME_BYTES: usize = 1024 * 1024;
 
@@ -88,12 +88,6 @@ pub enum ApiMethod {
         limit: u16,
     },
     Start {
-        task_id: TaskId,
-    },
-    WaitForApproval {
-        task_id: TaskId,
-    },
-    Approve {
         task_id: TaskId,
     },
     Succeed {
@@ -189,6 +183,7 @@ pub enum ApiErrorCode {
     IdempotencyConflict,
     CapacityExceeded,
     InvalidStateTransition,
+    ApprovalFailed,
     StorageUnavailable,
     ResponseTooLarge,
 }
@@ -241,16 +236,6 @@ impl<S: EventStore> ApiService<S> {
             ApiMethod::Start { task_id } => {
                 transition_response(&mut self.supervisor, task_id, TaskSupervisor::start)
             }
-            ApiMethod::WaitForApproval { task_id } => transition_response(
-                &mut self.supervisor,
-                task_id,
-                TaskSupervisor::wait_for_approval,
-            ),
-            ApiMethod::Approve { task_id } => transition_response(
-                &mut self.supervisor,
-                task_id,
-                TaskSupervisor::resume_after_approval,
-            ),
             ApiMethod::Succeed { task_id } => {
                 transition_response(&mut self.supervisor, task_id, TaskSupervisor::succeed)
             }
@@ -571,10 +556,13 @@ fn supervisor_error_response(error: SupervisorError) -> ApiResponse {
         SupervisorError::CapacityExceeded => {
             api_error(ApiErrorCode::CapacityExceeded, "task capacity exceeded")
         }
-        SupervisorError::InvalidStateTransition(_) => api_error(
+        SupervisorError::TaskNotRunning | SupervisorError::InvalidStateTransition(_) => api_error(
             ApiErrorCode::InvalidStateTransition,
             "requested task transition is not allowed",
         ),
+        SupervisorError::Approval(_) => {
+            api_error(ApiErrorCode::ApprovalFailed, "approval operation failed")
+        }
         SupervisorError::EventStore(_) => api_error(
             ApiErrorCode::StorageUnavailable,
             "event storage is unavailable",
@@ -726,12 +714,7 @@ mod tests {
             _ => panic!("task should be accepted"),
         };
 
-        for request in [
-            ApiMethod::Start { task_id },
-            ApiMethod::WaitForApproval { task_id },
-            ApiMethod::Approve { task_id },
-            ApiMethod::Succeed { task_id },
-        ] {
+        for request in [ApiMethod::Start { task_id }, ApiMethod::Succeed { task_id }] {
             assert!(matches!(
                 service.handle(ApiRequest::new(request)).outcome,
                 ApiOutcome::Ok { .. }
@@ -802,13 +785,13 @@ mod tests {
         });
 
         let mut stream = UnixStream::connect(&socket_path).expect("connect socket");
-        let request = br#"{"protocol_version":1,"request":{"method":"health"}}"#;
+        let request = br#"{"protocol_version":2,"request":{"method":"health"}}"#;
         write_frame(&mut stream, request, 1024).expect("write request");
         let response = read_frame(&mut stream, 1024)
             .expect("read response")
             .expect("response frame");
         let json = String::from_utf8(response).expect("UTF-8 response");
-        assert!(json.contains("\"protocol_version\":1"));
+        assert!(json.contains("\"protocol_version\":2"));
         assert!(json.contains("healthy"));
 
         handle.join().expect("server thread");
