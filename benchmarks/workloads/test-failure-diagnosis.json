@@ -1,0 +1,33 @@
+{
+  "idempotency_key": "benchmark-test-failure-diagnosis-v1",
+  "goal": "Reproduce one failing test in the Rust repository, identify its root cause, and report a minimal fix without modifying source files",
+  "capabilities": {
+    "filesystem": [
+      {
+        "path": "/workspace/project",
+        "access": "read"
+      },
+      {
+        "path": "/workspace/project/target",
+        "access": "write"
+      }
+    ],
+    "network": {
+      "mode": "deny"
+    },
+    "tools": [
+      "test_runner"
+    ]
+  },
+  "budget": {
+    "wall_time_seconds": 1800,
+    "memory_bytes": 4294967296,
+    "max_parallel_agents": 1
+  },
+  "approval": {
+    "required_for": [
+      "test.run",
+      "filesystem.write"
+    ]
+  }
+}

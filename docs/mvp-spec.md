@@ -202,6 +202,8 @@ The [Threat Model](threat-model.md) tracks concrete threats and release blockers
 
 Logs correlate through Task and Event IDs. Goal text, secrets, complete model responses, and private reasoning are excluded from default operational logs.
 
+The versioned [developer workloads and benchmark protocol](../benchmarks/README.md) define the initial quality, security-gate, and performance comparison rules.
+
 ## 10. Compatibility and migration
 
 MVP persistence formats are not stable APIs. A format change increments the schema version and provides either migration from the immediately previous version or an explicit reset procedure.
