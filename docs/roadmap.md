@@ -36,7 +36,8 @@ Run Tasks safely on one Linux device.
 - [ ] Encrypted Task-input storage and resumable recovery.
 - [ ] Operating-system enforcement adapters for filesystem, network, and tool capabilities.
 - [x] Approval audit events, cancellation invalidation, and timeout enforcement.
-- [ ] Resource-safe approval API and execution-adapter integration.
+- [x] Approval-aware in-process execution gate with complete-operation retention.
+- [ ] Principal-separated approval API and concrete execution adapters.
 - [ ] One local model adapter.
 
 Exit criteria:

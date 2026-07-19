@@ -85,7 +85,18 @@ This policy layer does not yet enforce operating-system access. Runtime adapters
 - Returns a linear grant that cannot be cloned, debugged, or serialized.
 - Consumes the grant on every authorization attempt, including scope mismatch and expiration.
 
-The current supervisor integrates the process-local `ApprovalAuthority` with capability evaluation, exact in-memory operation binding, Task state, and resource-free audit events. Approval IDs are public identifiers, not bearer secrets. Cancellation and terminal transitions invalidate unused authority, while audit persistence failures leave state unchanged or fail closed. Local API exposure, restart recovery of live grants, and execution-adapter integration remain future work. See [Approval grants](approval-grants.md).
+The current supervisor integrates the process-local `ApprovalAuthority` with capability evaluation, exact in-memory capability binding, Task state, and resource-free audit events. `ExecutionGate` additionally retains the complete typed operation and invokes its private adapter only after allow or successful grant consumption. Approval IDs are public identifiers, not bearer secrets. Cancellation and terminal transitions invalidate unused authority, while audit persistence failures leave state unchanged or fail closed. Local API exposure, restart recovery of live grants, and concrete operating-system adapters remain future work. See [Approval grants](approval-grants.md).
+
+### Execution Gate
+
+- Owns a raw adapter without exposing a bypass reference.
+- Accepts complete typed operations from trusted adapter integration code.
+- Retains complete operation arguments privately while approval is pending.
+- Drops denied, cancelled, expired, mismatched, and already-attempted operations.
+- Invokes the adapter only after the runtime records allow or consumes an approval grant.
+- Redacts adapter errors at the shared execution boundary.
+
+The gate is an in-process authorization boundary, not an operating-system sandbox. Concrete adapters must prevent direct subprocess, file-descriptor, network, and device access outside the gate. Model and tool processes must not receive the daemon control socket or raw adapter handles.
 
 ### Model Router
 

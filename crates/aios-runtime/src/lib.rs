@@ -5,6 +5,7 @@
 
 mod approval;
 mod event;
+mod execution;
 mod supervisor;
 
 pub use approval::{
@@ -13,6 +14,9 @@ pub use approval::{
 };
 pub use event::{
     EventStore, EventStoreError, InMemoryEventStore, TaskEvent, TaskEventKind, TaskId,
+};
+pub use execution::{
+    Executed, ExecutionAdapter, ExecutionError, ExecutionGate, ExecutionOutcome, GuardedOperation,
 };
 pub use supervisor::{
     OperationAuthorization, SubmitResult, SupervisorError, TaskSnapshot, TaskSupervisor,

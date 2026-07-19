@@ -61,4 +61,4 @@ The policy engine answers whether an operation may proceed. It does not make the
 5. apply operating-system isolation and resource limits;
 6. record a resource-free audit event for the decision.
 
-Linear approval grants now exist in `aios-runtime`, but API, audit-event, lifecycle, and execution-adapter integration remain future work. Until those adapters exist, this module must not be described as complete operating-system capability enforcement.
+`aios-runtime` now provides `ExecutionGate`, which retains the complete adapter operation while approval is pending and invokes the adapter only after allow or successful grant consumption. The gate does not provide operating-system isolation by itself. Filesystem, network, tool, and model adapters must still enforce resolved resources, subprocess boundaries, and resource limits, so this module must not be described as complete operating-system capability enforcement.
