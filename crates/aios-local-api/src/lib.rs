@@ -23,7 +23,7 @@ use serde::{Deserialize, Serialize};
 pub const DEFAULT_MAX_FRAME_BYTES: usize = 64 * 1024;
 pub const DEFAULT_EVENT_PAGE_SIZE: u16 = 100;
 pub const MAX_EVENT_PAGE_SIZE: u16 = 256;
-pub const PROTOCOL_VERSION: u16 = 2;
+pub const PROTOCOL_VERSION: u16 = 3;
 const MIN_MAX_FRAME_BYTES: usize = 1024;
 const MAX_MAX_FRAME_BYTES: usize = 1024 * 1024;
 
@@ -58,6 +58,11 @@ impl ServerConfig {
 pub struct ApiRequest {
     pub protocol_version: u16,
     pub request: ApiMethod,
+}
+
+#[derive(Deserialize)]
+struct ProtocolProbe {
+    protocol_version: u16,
 }
 
 impl ApiRequest {
@@ -388,8 +393,15 @@ fn serve_stream<S: EventStore>(
     max_frame_bytes: usize,
 ) -> Result<(), LocalApiError> {
     let response = match read_frame(stream, max_frame_bytes) {
-        Ok(Some(payload)) => match serde_json::from_slice(&payload) {
-            Ok(request) => service.handle(request),
+        Ok(Some(payload)) => match serde_json::from_slice::<ProtocolProbe>(&payload) {
+            Ok(probe) if probe.protocol_version != PROTOCOL_VERSION => api_error(
+                ApiErrorCode::UnsupportedProtocolVersion,
+                "protocol version is not supported",
+            ),
+            Ok(_) => match serde_json::from_slice(&payload) {
+                Ok(request) => service.handle(request),
+                Err(_) => invalid_request(),
+            },
             Err(_) => invalid_request(),
         },
         Ok(None) => return Err(LocalApiError::Protocol),
@@ -611,8 +623,8 @@ mod tests {
     use aios_runtime::{InMemoryEventStore, TaskSupervisor};
 
     use super::{
-        ApiMethod, ApiOutcome, ApiRequest, ApiResult, ApiService, LocalApiError, LocalServer,
-        PROTOCOL_VERSION, ServerConfig, read_frame, send_request, write_frame,
+        ApiMethod, ApiOutcome, ApiRequest, ApiResponse, ApiResult, ApiService, LocalApiError,
+        LocalServer, PROTOCOL_VERSION, ServerConfig, read_frame, send_request, write_frame,
     };
 
     struct TestSocketDirectory {
@@ -676,11 +688,11 @@ mod tests {
     }
 
     #[test]
-    fn service_rejects_unsupported_protocol_version() {
+    fn service_rejects_protocol_version_two_after_network_contract_change() {
         let supervisor = TaskSupervisor::new(InMemoryEventStore::default());
         let mut service = ApiService::new(supervisor);
         let response = service.handle(ApiRequest {
-            protocol_version: PROTOCOL_VERSION + 1,
+            protocol_version: 2,
             request: ApiMethod::Health,
         });
 
@@ -785,14 +797,70 @@ mod tests {
         });
 
         let mut stream = UnixStream::connect(&socket_path).expect("connect socket");
-        let request = br#"{"protocol_version":2,"request":{"method":"health"}}"#;
+        let request = br#"{"protocol_version":3,"request":{"method":"health"}}"#;
         write_frame(&mut stream, request, 1024).expect("write request");
         let response = read_frame(&mut stream, 1024)
             .expect("read response")
             .expect("response frame");
         let json = String::from_utf8(response).expect("UTF-8 response");
-        assert!(json.contains("\"protocol_version\":2"));
+        assert!(json.contains("\"protocol_version\":3"));
         assert!(json.contains("healthy"));
+
+        handle.join().expect("server thread");
+    }
+
+    #[test]
+    fn server_rejects_version_two_before_parsing_legacy_task_shape() {
+        let directory = TestSocketDirectory::new();
+        let socket_path = directory.socket_path();
+        let server = LocalServer::bind(&socket_path, ServerConfig::default()).expect("bind socket");
+
+        let handle = thread::spawn(move || {
+            let supervisor = TaskSupervisor::new(InMemoryEventStore::default());
+            let mut service = ApiService::new(supervisor);
+            server.serve_once(&mut service).expect("serve request");
+        });
+
+        let mut stream = UnixStream::connect(&socket_path).expect("connect socket");
+        let request = br#"
+        {
+          "protocol_version": 2,
+          "request": {
+            "method": "submit",
+            "task": {
+              "idempotency_key": "legacy-network-task",
+              "goal": "Use the legacy network shape",
+              "capabilities": {
+                "filesystem": [],
+                "network": {"mode": "allow", "hosts": ["api.example.com"]},
+                "tools": []
+              },
+              "budget": {
+                "wall_time_seconds": 60,
+                "memory_bytes": 1048576,
+                "max_parallel_agents": 1
+              },
+              "approval": {"required_for": ["network.egress"]}
+            }
+          }
+        }
+        "#;
+        write_frame(&mut stream, request, 4096).expect("write request");
+        let response = read_frame(&mut stream, 4096)
+            .expect("read response")
+            .expect("response frame");
+        let response: ApiResponse = serde_json::from_slice(&response).expect("parse response");
+
+        assert_eq!(response.protocol_version, PROTOCOL_VERSION);
+        assert!(matches!(
+            response.outcome,
+            ApiOutcome::Error {
+                error: super::ApiError {
+                    code: super::ApiErrorCode::UnsupportedProtocolVersion,
+                    ..
+                }
+            }
+        ));
 
         handle.join().expect("server thread");
     }

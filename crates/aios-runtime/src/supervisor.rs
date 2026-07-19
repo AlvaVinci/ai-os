@@ -4,8 +4,8 @@ use std::fmt::{self, Display, Formatter};
 use std::time::Duration;
 
 use aios_core::{
-    CapabilityPolicy, CapabilityRequest, DenialReason, FileAccess, PolicyDecision,
-    StateTransitionError, TaskSpec, TaskState, ValidationErrors,
+    CapabilityPolicy, CapabilityRequest, DenialReason, FileAccess, NetworkTransport,
+    PolicyDecision, StateTransitionError, TaskSpec, TaskState, ValidationErrors,
 };
 
 use crate::{
@@ -22,9 +22,19 @@ struct TaskRecord {
 
 #[derive(Eq, PartialEq)]
 enum OwnedCapabilityRequest {
-    File { path: String, access: FileAccess },
-    Network { host: String },
-    Tool { tool: String, action: String },
+    File {
+        path: String,
+        access: FileAccess,
+    },
+    Network {
+        host: String,
+        transport: NetworkTransport,
+        port: u16,
+    },
+    Tool {
+        tool: String,
+        action: String,
+    },
 }
 
 impl OwnedCapabilityRequest {
@@ -34,8 +44,14 @@ impl OwnedCapabilityRequest {
                 path: path.to_owned(),
                 access,
             },
-            CapabilityRequest::Network { host } => Self::Network {
+            CapabilityRequest::Network {
+                host,
+                transport,
+                port,
+            } => Self::Network {
                 host: host.to_owned(),
+                transport,
+                port,
             },
             CapabilityRequest::Tool { tool, action } => Self::Tool {
                 tool: tool.to_owned(),
@@ -50,7 +66,15 @@ impl OwnedCapabilityRequest {
                 path,
                 access: *access,
             },
-            Self::Network { host } => CapabilityRequest::Network { host },
+            Self::Network {
+                host,
+                transport,
+                port,
+            } => CapabilityRequest::Network {
+                host,
+                transport: *transport,
+                port: *port,
+            },
             Self::Tool { tool, action } => CapabilityRequest::Tool { tool, action },
         }
     }
@@ -696,7 +720,7 @@ mod tests {
 
     use aios_core::{
         ApprovalPolicy, Budget, CapabilityRequest, CapabilitySet, FileAccess, FileCapability,
-        NetworkPolicy, TaskSpec, TaskState,
+        NetworkDestination, NetworkPolicy, NetworkTransport, TaskSpec, TaskState,
     };
 
     use super::{OperationAuthorization, SubmitResult, SupervisorError, TaskSupervisor};
@@ -918,6 +942,66 @@ mod tests {
                 CapabilityRequest::File {
                     path: "/workspace/project/a.txt",
                     access: FileAccess::Write,
+                },
+            ),
+            Err(SupervisorError::Approval(crate::ApprovalError::NotFound))
+        ));
+    }
+
+    #[test]
+    fn network_port_mismatch_consumes_linear_grant() {
+        let mut spec = valid_task();
+        spec.capabilities.network = NetworkPolicy::Allow {
+            destinations: vec![NetworkDestination {
+                host: "api.example.com".to_owned(),
+                transport: NetworkTransport::Tcp,
+                port: 443,
+            }],
+        };
+        spec.approval.required_for = vec!["network.egress".to_owned()];
+        let mut supervisor = TaskSupervisor::default();
+        let task_id = accepted_task_id(supervisor.submit(spec).expect("submit task"));
+        supervisor.start(task_id).expect("start task");
+        let OperationAuthorization::ApprovalRequired(request) = supervisor
+            .request_operation(
+                task_id,
+                CapabilityRequest::Network {
+                    host: "api.example.com",
+                    transport: NetworkTransport::Tcp,
+                    port: 443,
+                },
+                Duration::from_secs(30),
+            )
+            .expect("request operation")
+        else {
+            panic!("expected approval request");
+        };
+        supervisor
+            .approve_operation(request.approval_id)
+            .expect("approve operation");
+
+        assert!(matches!(
+            supervisor.authorize_operation(
+                task_id,
+                request.operation_id,
+                CapabilityRequest::Network {
+                    host: "api.example.com",
+                    transport: NetworkTransport::Tcp,
+                    port: 8443,
+                },
+            ),
+            Err(SupervisorError::Approval(
+                crate::ApprovalError::ScopeMismatch
+            ))
+        ));
+        assert!(matches!(
+            supervisor.authorize_operation(
+                task_id,
+                request.operation_id,
+                CapabilityRequest::Network {
+                    host: "api.example.com",
+                    transport: NetworkTransport::Tcp,
+                    port: 443,
                 },
             ),
             Err(SupervisorError::Approval(crate::ApprovalError::NotFound))

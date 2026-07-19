@@ -38,7 +38,7 @@ Deadlines use `std::time::Instant`, so they are monotonic but process-local. Pen
 
 ## Data exposure
 
-The user-facing request snapshot contains only Approval ID, Task ID, Operation ID, action identifier, and requested lifetime. It does not contain paths, hosts, tool arguments, secrets, or model reasoning.
+The user-facing request snapshot contains only Approval ID, Task ID, Operation ID, action identifier, and requested lifetime. It does not contain paths, network destinations, tool arguments, secrets, or model reasoning.
 
 Grant internals and deadlines are private. Errors use stable non-sensitive categories and never echo action or resource values.
 

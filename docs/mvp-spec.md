@@ -2,7 +2,7 @@
 
 ## Status
 
-Draft 0.2. Numeric limits and implementation technologies may change through validation.
+Draft 0.3. Numeric limits and implementation technologies may change through validation.
 
 ## 1. Background
 
@@ -53,6 +53,7 @@ Local AI agent applications often implement model access, tools, permissions, bu
 - **FR-012**: Every local API request declares its protocol version, and unsupported versions are rejected explicitly.
 - **FR-013**: Capability decisions are deterministic, fail closed, and evaluate granted capability before approval requirements.
 - **FR-014**: Approval grants are task-, operation-, and action-scoped, time-limited, and consumable only once.
+- **FR-015**: Every allowed network destination declares an exact validated host or IP address, TCP transport, and non-zero port.
 
 ### Task input example
 
@@ -121,7 +122,7 @@ submitted -> validating -> queued -> running -> succeeded
 - `null` for a required field is a validation error and is not silently defaulted.
 - Repeating an idempotency key with identical input returns the existing Task.
 - Reusing an idempotency key with different input returns a conflict.
-- Duplicate tools, approval actions, and network hosts are validation errors.
+- Duplicate tools, approval actions, and network destinations are validation errors.
 - `max_parallel_agents` is between 1 and 8 for the MVP.
 - Zero budgets, integer overflow, and unknown units are rejected.
 - When a budget is reached, new tool calls stop and the Task fails.
@@ -145,10 +146,10 @@ submitted -> validating -> queued -> running -> succeeded
 The [Threat Model](threat-model.md) tracks concrete threats and release blockers. The [Capability Model](capability-model.md) defines the normative authority and enforcement rules.
 
 - External network access is denied by default.
-- Allowed network destinations are explicit lowercase host names or IP addresses without schemes, paths, or ports.
+- Allowed network destinations identify an exact lowercase hostname or IP address, TCP transport, and non-zero port without schemes or paths.
 - Filesystem scopes match only the normalized path itself or a descendant separated by `/`; string-prefix siblings do not match.
 - Read and write capabilities are independent and do not imply each other.
-- Tool names, network hosts, and approval action identifiers use exact matching.
+- Tool names, complete network destinations, and approval action identifiers use exact matching.
 - Invalid operation requests and missing capabilities are denied with stable, resource-free reason codes.
 - Pending approvals are bounded, expire against a monotonic process-local clock, and reject duplicate Task and Operation pairs.
 - Linear approval grants cannot be cloned, debugged, or serialized through safe Rust APIs.
@@ -190,6 +191,7 @@ The [Threat Model](threat-model.md) tracks concrete threats and release blockers
 6. Given a running Task with persisted Events, when the runtime restarts, then its recovery state and existing Events can be inspected without loading goal or capability values.
 7. Given two model adapters, when configuration switches between them, then the Task API format does not change.
 8. Given Event storage failure, when a state change is requested, then the Task state remains unchanged.
+9. Given a Task that grants one TCP network destination, when an agent requests the same host on another port, then the connection is denied before adapter execution.
 
 ## 9. Metrics, logs, and monitoring
 

@@ -21,7 +21,7 @@ Denials use stable reason codes:
 - `INVALID_REQUEST`
 - `CAPABILITY_NOT_GRANTED`
 
-Requested paths, hosts, tool names, and action names are not copied into decisions. Operation request types intentionally do not implement debug formatting or serialization.
+Requested paths, network destinations, tool names, and action names are not copied into decisions. Operation request types intentionally do not implement debug formatting or serialization.
 
 ## Filesystem semantics
 
@@ -37,8 +37,8 @@ These rules are lexical. Before performing an operation, a filesystem adapter mu
 ## Network semantics
 
 - Network access is denied by default.
-- Requested hosts must use the same validated lowercase host-name or IP-address format as Task capabilities.
-- Matching is exact. Subdomains, schemes, paths, and ports are not inferred.
+- Requested destinations must identify a validated lowercase hostname or IP address, TCP transport, and non-zero port.
+- Host, transport, and port matching are exact. Subdomains, schemes, paths, resolved addresses, and additional ports are not inferred.
 - Granted egress uses `network.egress` as its approval action identifier.
 
 A network adapter must additionally bind authorization to the actual connection destination and defend against DNS rebinding, redirects, proxies, alternate IP representations, and subprocess bypasses.

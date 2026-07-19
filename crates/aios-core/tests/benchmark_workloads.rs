@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 
-use aios_core::{FileAccess, NetworkPolicy, TaskSpec};
+use aios_core::{FileAccess, NetworkPolicy, NetworkTransport, TaskSpec};
 
 const REPOSITORY_INVESTIGATION: &str =
     include_str!("../../../benchmarks/workloads/repository-investigation.json");
@@ -68,10 +68,13 @@ fn test_diagnosis_limits_writes_and_requires_execution_approval() {
 fn dependency_review_scopes_egress_and_requires_network_approval() {
     let task = parse(DEPENDENCY_ADVISORY_REVIEW);
 
-    let NetworkPolicy::Allow { hosts } = task.capabilities.network else {
+    let NetworkPolicy::Allow { destinations } = task.capabilities.network else {
         panic!("dependency review must use an explicit network allowlist");
     };
-    assert_eq!(hosts.as_slice(), ["api.osv.dev"]);
+    assert_eq!(destinations.len(), 1);
+    assert_eq!(destinations[0].host, "api.osv.dev");
+    assert_eq!(destinations[0].transport, NetworkTransport::Tcp);
+    assert_eq!(destinations[0].port, 443);
     assert_eq!(task.capabilities.tools.as_slice(), ["dependency_scanner"]);
     assert_eq!(task.approval.required_for.as_slice(), ["network.egress"]);
     assert!(

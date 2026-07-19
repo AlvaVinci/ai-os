@@ -12,5 +12,6 @@ pub use error::{ErrorCode, StateTransitionError, ValidationError, ValidationErro
 pub use policy::{CapabilityPolicy, CapabilityRequest, DenialReason, PolicyDecision};
 pub use state::TaskState;
 pub use task::{
-    ApprovalPolicy, Budget, CapabilitySet, FileAccess, FileCapability, NetworkPolicy, TaskSpec,
+    ApprovalPolicy, Budget, CapabilitySet, FileAccess, FileCapability, NetworkDestination,
+    NetworkPolicy, NetworkTransport, TaskSpec,
 };
