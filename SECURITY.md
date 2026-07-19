@@ -1,21 +1,23 @@
 # Security Policy
 
-## 対象
+## Scope
 
-現在は設計段階です。公開された設計、将来追加されるコード、既定設定により、権限回避、データ漏えい、任意コード実行、監査回避が可能になる問題をセキュリティ上の問題として扱います。
+AI OS is currently in an early implementation phase. Security issues include flaws in published designs, code, or defaults that could enable authorization bypass, data disclosure, arbitrary code execution, audit bypass, or denial of service.
 
-## 報告方法
+## Reporting a vulnerability
 
-セキュリティ上の問題を公開Issueへ投稿しないでください。このリポジトリのGitHubページで **Security**、**Advisories**、**Report a vulnerability** の順に選び、非公開で報告してください。
+Do not report vulnerabilities in public issues.
 
-非公開報告機能が利用できない場合は、脆弱性の詳細や再現手順を公開せず、リポジトリ管理者へ非公開連絡手段の設定を依頼してください。
+Open this repository's **Security** tab, select **Advisories**, and choose **Report a vulnerability** to submit a private report.
 
-報告には可能な範囲で次を含めてください。
+If private reporting is unavailable, do not publish details or reproduction steps. Ask a repository maintainer to establish a private communication channel.
 
-- 影響を受けるバージョンまたはコミット
-- 前提条件と再現手順
-- 想定される影響
-- 既知の回避策
-- 公開予定や他者への共有状況
+Include as much of the following as possible:
 
-受領後、影響と再現性を確認し、修正方針と公開時期を報告者と調整します。応答時間の保証は、保守体制の確立後に定義します。
+- affected version or commit
+- prerequisites and reproduction steps
+- expected impact
+- known mitigations
+- planned disclosure date or existing third-party disclosure
+
+After receiving a report, maintainers will evaluate impact and reproducibility, then coordinate remediation and disclosure with the reporter. Response-time targets will be defined when the maintenance team is established.

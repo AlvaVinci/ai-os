@@ -1,47 +1,53 @@
 # Contributing
 
-AI OSへの関心と貢献に感謝します。現在は構想・設計段階のため、具体的なユースケース、制約、失敗例、検証方法を伴う提案を歓迎します。
+Thank you for your interest in AI OS. The project is in an early design and implementation phase. Concrete use cases, constraints, failure scenarios, tests, and focused code changes are welcome.
 
-## Issueを作成する前に
+## Project language
 
-- 既存のIssueと文書を確認してください
-- 機能提案では、対象ユーザーと解決したい問題を説明してください
-- 実装方法だけでなく、外部から確認できる受け入れ条件を示してください
-- セキュリティ上の問題は公開Issueに投稿せず、[SECURITY.md](SECURITY.md) に従ってください
+English is the canonical language for source code, documentation, issues, and pull requests. Clear contributions from non-native English speakers are welcome; perfect wording is not required.
 
-## 変更方針
+Translations may be added under language-specific directories when there is enough demand and a maintenance owner. Canonical technical decisions remain in English to avoid specification drift.
 
-- 変更は小さく、1つの目的にまとめる
-- 既存の用語と責務境界を尊重する
-- 無関係なリファクタリングや依存追加を含めない
-- 振る舞いの変更にはテストまたは検証手順を含める
-- セキュリティ、互換性、ロールバックへの影響を記載する
+## Before opening an issue
 
-## 開発フロー
+- Search existing issues and documentation.
+- Describe the affected user and the problem before proposing an implementation.
+- Include externally observable acceptance criteria when possible.
+- Do not post security vulnerabilities publicly; follow [SECURITY.md](SECURITY.md).
 
-1. 変更対象に関連するIssueを確認または作成する
-2. 小さなブランチで変更する
-3. 文書、フォーマット、テストを確認する
-4. 変更理由、検証内容、影響範囲をPull Requestへ記載する
+## Change guidelines
 
-コミットメッセージはConventional Commits形式を推奨します。
+- Keep each change small and focused on one purpose.
+- Preserve established terminology and trust boundaries.
+- Avoid unrelated refactoring and unnecessary dependencies.
+- Include tests or reproducible verification for behavior changes.
+- Describe security, compatibility, operational, and rollback impact.
+
+## Development workflow
+
+1. Find or create an issue for the change when design discussion is useful.
+2. Work on a focused branch.
+3. Run formatting, tests, and static analysis.
+4. Open a pull request that explains the reason, verification, and impact.
+
+Use Conventional Commits:
 
 ```text
-docs(vision): ローカル優先の原則を明文化する
-feat(runtime): タスク状態機械を追加する
-fix(policy): 正規化前のパス評価を禁止する
+docs(vision): define the local-first principle
+feat(runtime): add the task state machine
+fix(policy): reject paths before normalization
 ```
 
-## 設計判断
+## Design decisions
 
-次の変更は、実装前にIssueまたはADRで代替案を比較してください。
+Discuss alternatives in an issue or architecture decision record before implementing changes to:
 
-- 公開APIや永続形式の変更
-- 信頼境界、Capability、承認フローの変更
-- 新しい常駐サービスや外部依存の追加
-- 対応OS、CPUアーキテクチャ、モデルランタイムの変更
-- カーネル機能または特権プロセスの導入
+- public APIs or persistent formats
+- trust boundaries, capabilities, or approval flows
+- long-running services or external dependencies
+- supported operating systems, CPU architectures, or model runtimes
+- kernel features or privileged processes
 
-## ライセンス
+## License
 
-コントリビューションを提出すると、[Apache License 2.0](LICENSE) の条件で提供することに同意したものとみなされます。
+By submitting a contribution, you agree that it is provided under the [Apache License 2.0](LICENSE).

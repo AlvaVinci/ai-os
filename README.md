@@ -1,48 +1,48 @@
 # AI OS
 
-個人・開発者向けの、ローカル優先なAIネイティブOS実行基盤です。
+A local-first, AI-native operating-system runtime for individuals and developers.
 
 > [!IMPORTANT]
-> 現在は構想・設計段階です。起動可能なOSや実用ランタイムはまだ提供していません。
+> AI OS is in active design and early implementation. It is not yet a bootable operating system or a production-ready runtime.
 
-## ビジョン
+## Vision
 
-従来のOSがプロセス、ファイル、ウィンドウを中心に設計されているのに対し、AI OSは次の要素を第一級の概念として扱います。
+Traditional operating systems treat processes, files, and windows as primary abstractions. AI OS adds first-class concepts for running AI safely and efficiently:
 
-- **Task**: 達成する目的、制約、期限、予算
-- **Agent**: タスクを計画・実行する主体
-- **Model**: ローカルまたは外部の推論資源
-- **Context**: 出所と有効期限を持つ短期・長期の文脈
-- **Capability**: ファイル、ネットワーク、ツールへの明示的な権限
-- **Budget**: CPU、GPU、RAM、VRAM、電力、時間、外部API費用の上限
-- **Event**: 判断と操作を再現するための監査記録
+- **Task**: a goal with constraints, deadlines, and budgets
+- **Agent**: an actor that plans and performs work for a task
+- **Model**: a local or remote inference resource
+- **Context**: short- and long-term information with provenance and expiration
+- **Capability**: explicit permission to access files, networks, or tools
+- **Budget**: limits for CPU, GPU, RAM, VRAM, power, time, and external API cost
+- **Event**: an audit record that makes important decisions and operations traceable
 
-AIによる判断は、決定論的なポリシー・権限検証を通して実行します。モデル出力を、そのまま特権操作として扱いません。
+AI decisions pass through deterministic policy and capability checks. Model output is never treated as a privileged instruction by itself.
 
-## 初期スコープ
+## Initial scope
 
-最初の成果物は、Linux上で動作するユーザー空間ランタイムです。
+The first deliverable is a user-space runtime for Linux:
 
-- 構造化されたタスクの受付と状態管理
-- エージェントの起動、監視、停止、再試行
-- 能力ベースの権限管理と人間による承認
-- ローカルモデルを優先するモデルルーティング
-- CPU、GPU、メモリ、時間を考慮した資源管理
-- 追記型イベントログによる監査と再現
-- CLIおよび安定したローカルAPI
+- structured task submission and lifecycle management
+- agent startup, monitoring, cancellation, and retry control
+- capability-based authorization and human approval gates
+- local-first model routing
+- CPU, GPU, memory, and time-aware resource management
+- append-only events for auditability
+- a CLI and stable local API
 
-独自カーネルは初期スコープに含めません。ユーザー空間で計測し、Linuxでは解決できない要件が明確になった時点で、カーネル拡張または独自カーネルを評価します。
+A custom kernel is outside the initial scope. AI OS will first measure real workloads in user space and evaluate kernel extensions only when Linux cannot satisfy a demonstrated requirement.
 
-## 設計原則
+## Design principles
 
-1. **Local first** — データと推論は、明示的に許可されない限り端末外へ送信しない。
-2. **Deterministic enforcement** — AIは方針を提案し、決定論的な実行層が権限と制約を強制する。
-3. **Least privilege** — エージェントにはタスクに必要な最小権限だけを付与する。
-4. **Observable and replayable** — 重要な判断、承認、操作、資源消費を追跡可能にする。
-5. **Model agnostic** — 特定のモデル、ベンダー、アクセラレータに中核設計を依存させない。
-6. **Compatibility first** — Linuxのプロセス、ファイル、コンテナ、既存開発ツールを活用する。
+1. **Local first** — Data and inference stay on the device unless external access is explicitly allowed.
+2. **Deterministic enforcement** — AI proposes actions; deterministic code enforces permissions and limits.
+3. **Least privilege** — Each task receives only the capabilities it needs.
+4. **Observable and replayable** — Important state changes, approvals, operations, and resource use are traceable.
+5. **Model agnostic** — Core contracts do not depend on one model, vendor, or accelerator.
+6. **Compatibility first** — Linux processes, files, containers, and existing developer tools remain usable.
 
-## アーキテクチャ
+## Architecture
 
 ```text
 CLI / Local API / Future GUI
@@ -53,28 +53,58 @@ Policy / Capability / Approval
             |
 Model Router & Resource Scheduler
             |
-Model Runtime / Context Store / Event Log
+Model Runtime / Context Store / Event Store
             |
 Linux Kernel / Containers / Hardware
 ```
 
-詳しくは以下を参照してください。
+Read more:
 
-- [ビジョン](docs/vision.md)
-- [アーキテクチャ](docs/architecture.md)
-- [MVP仕様](docs/mvp-spec.md)
-- [ロードマップ](docs/roadmap.md)
+- [Vision](docs/vision.md)
+- [Architecture](docs/architecture.md)
+- [MVP specification](docs/mvp-spec.md)
+- [Roadmap](docs/roadmap.md)
 
-## プロジェクト状況
+## Project status
 
-現在のフェーズは **Phase 0: Foundation** です。用語、脅威境界、MVP受け入れ条件を固めています。
+AI OS is in the early part of **Phase 1: Safe Local Runtime**.
 
-設計上の論点やユースケースは、GitHub Issuesで提案してください。実装開始前でも、具体的な制約や失敗例を伴う議論を歓迎します。
+Implemented:
 
-## コントリビューション
+- strict Task JSON contracts and validation in `aios-core`
+- goal, idempotency, capability, budget, and approval boundary checks
+- network deny-by-default with exact host allowlists
+- normalized absolute-path validation and traversal rejection
+- deterministic task states and idempotent cancellation
+- UUIDv7 task identifiers
+- bounded synchronous `TaskSupervisor` with idempotent submission
+- bounded, append-only `InMemoryEventStore`
+- audit-first state changes that leave task state unchanged when event storage fails
 
-[CONTRIBUTING.md](CONTRIBUTING.md) を参照してください。セキュリティ上の問題は公開Issueに投稿せず、[SECURITY.md](SECURITY.md) の手順に従ってください。
+Not implemented yet:
 
-## ライセンス
+- a long-running daemon and local API
+- operating-system enforcement of capabilities
+- persistent event and task storage
+- model and tool execution
+- resource usage enforcement and monitoring
 
-Apache License 2.0です。詳細は [LICENSE](LICENSE) を参照してください。
+## Development
+
+The Rust toolchain is pinned in [rust-toolchain.toml](rust-toolchain.toml).
+
+```bash
+cargo fmt --all -- --check
+cargo test --workspace --all-targets --locked
+cargo clippy --workspace --all-targets --locked -- -D warnings
+```
+
+See [examples/task.json](examples/task.json) for a task input example. Tests load this file directly to detect schema drift.
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md). Do not post security vulnerabilities in public issues; follow [SECURITY.md](SECURITY.md) instead.
+
+## License
+
+Licensed under the [Apache License 2.0](LICENSE).
