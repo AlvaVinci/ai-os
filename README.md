@@ -62,6 +62,7 @@ Read more:
 
 - [Vision](docs/vision.md)
 - [Architecture](docs/architecture.md)
+- [Capability policy](docs/capability-policy.md)
 - [MVP specification](docs/mvp-spec.md)
 - [Roadmap](docs/roadmap.md)
 
@@ -87,6 +88,8 @@ Implemented:
 - one-request-per-connection framing, timeouts, and event pagination
 - Protocol Version 1 with explicit incompatible-version rejection
 - `aiosctl` for task submission, inspection, events, and lifecycle transitions
+- deterministic filesystem, network, and tool capability policy decisions
+- fail-closed authorization with resource-free denial and approval results
 
 Not implemented yet:
 

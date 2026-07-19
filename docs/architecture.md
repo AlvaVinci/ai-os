@@ -72,6 +72,10 @@ The current implementation is synchronous and process-local. It limits the numbe
 - Enforce constraints independently from prompts and model output.
 - Record denial and approval reason codes without sensitive input values.
 
+The current `CapabilityPolicy` is a pure, deterministic pre-execution evaluator. It can only be created from a valid Task. It returns `allow`, `deny`, or `approval_required` without including requested resource values in the decision. Capability checks always run before approval checks, so an approval rule cannot grant a missing capability.
+
+This policy layer does not yet enforce operating-system access. Runtime adapters must call it before every operation and separately prevent path races, symlink escapes, DNS rebinding, inherited file descriptors, and subprocess bypasses. See [Capability policy](capability-policy.md) for the exact MVP semantics and enforcement boundary.
+
 ### Model Router
 
 - Select models based on task requirements, privacy, latency, and available resources.
