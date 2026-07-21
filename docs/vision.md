@@ -57,6 +57,8 @@ MVP success is not determined by maximum inference speed alone. The runtime must
 - failures and human approvals can be traced from events
 - representative developer tasks can complete with local models only
 
+The normative, testable release boundary for these outcomes is the [v0.1 Definition of Done](definition-of-done.md).
+
 ## Core position
 
 The model is not the kernel. A model is a component that reasons inside a trust boundary, and its output is always untrusted input. Deterministic software remains responsible for permissions, resource limits, auditability, and preventing irreversible operations.

@@ -71,11 +71,12 @@ Read more:
 - [Developer workloads and benchmarks](benchmarks/README.md)
 - [Architecture decisions](docs/adr/README.md)
 - [MVP specification](docs/mvp-spec.md)
+- [v0.1 Definition of Done](docs/definition-of-done.md)
 - [Roadmap](docs/roadmap.md)
 
 ## Project status
 
-AI OS is in the early part of **Phase 1: Safe Local Runtime**.
+AI OS has completed Phase 0 and is implementing the controls required for **v0.1: Safe Local Runtime**. Roadmap checkboxes describe implementation work; release readiness is measured only by the nine mandatory gates in the [v0.1 Definition of Done](docs/definition-of-done.md).
 
 Implemented:
 
@@ -111,7 +112,7 @@ Not implemented yet:
 
 - operating-system enforcement of capabilities
 - principal-separated approval API and operating-system isolation adapters
-- persistent Task input and resumable execution recovery
+- post-v0.1 encrypted Task input and resumable execution recovery
 - model execution and isolated out-of-process Tool execution
 - resource usage enforcement and monitoring
 
