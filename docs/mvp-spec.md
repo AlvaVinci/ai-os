@@ -2,7 +2,7 @@
 
 ## Status
 
-Draft 0.3. Numeric limits and implementation technologies may change through validation.
+Draft 0.4. Numeric limits and implementation technologies may change through validation. Release readiness is governed by the [v0.1 Definition of Done](definition-of-done.md).
 
 ## 1. Background
 
@@ -54,6 +54,10 @@ Local AI agent applications often implement model access, tools, permissions, bu
 - **FR-013**: Capability decisions are deterministic, fail closed, and evaluate granted capability before approval requirements.
 - **FR-014**: Approval grants are task-, operation-, and action-scoped, time-limited, and consumable only once.
 - **FR-015**: Every allowed network destination declares an exact validated host or IP address, TCP transport, and non-zero port.
+- **FR-016**: At least one real local model adapter executes Tasks through a model-independent runtime contract.
+- **FR-017**: Runtime adapters bind authorization to the filesystem object, network destination, or Tool process actually used by Linux.
+- **FR-018**: Untrusted runners cannot access the daemon control socket, approval channel, credentials, or unrelated inherited descriptors.
+- **FR-019**: A daemon restart never restores pending authority; every previously non-terminal v0.1 Task receives an explicit non-resumable outcome.
 
 ### Task input example
 
@@ -136,6 +140,7 @@ submitted -> validating -> queued -> running -> succeeded
 - `CAPABILITY_DENIED`: a required capability was not granted
 - `APPROVAL_EXPIRED`: a requested approval expired
 - `BUDGET_EXCEEDED`: a resource limit was reached
+- `RUNTIME_RESTARTED`: a non-resumable Task was active when the daemon restarted
 - `RUNTIME_UNAVAILABLE`: a requested model or tool is unavailable
 - `INTERNAL_ERROR`: an internal failure with a non-sensitive diagnostic ID
 
@@ -162,7 +167,8 @@ The [Threat Model](threat-model.md) tracks concrete threats and release blockers
 ### Reliability
 
 - Events and their derived public Task state survive a runtime restart.
-- Resumable Task input remains separate from audit persistence and requires an encrypted storage design.
+- v0.1 does not resume Task execution after a runtime restart. Previously non-terminal Tasks receive a deterministic non-resumable outcome, and no approval or operation authority is reconstructed from Events.
+- Future resumable Task input remains separate from audit persistence and requires an encrypted storage design.
 - Event sequence numbers increase monotonically per Task.
 - Tool retries are limited to operations declared idempotent.
 - Multi-event submission records are appended atomically.

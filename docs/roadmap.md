@@ -2,6 +2,8 @@
 
 The roadmap uses verifiable exit criteria rather than calendar promises. Each phase may change based on measurements from the previous phase.
 
+Phases describe implementation order, not releases. AI OS v0.1 is complete only when every mandatory gate in the [v0.1 Definition of Done](definition-of-done.md) is verified on one release commit. Roadmap checkbox counts must not be reported as release-readiness percentages.
+
 ## Phase 0: Foundation
 
 Define the project boundary and security model.
@@ -33,7 +35,7 @@ Run Tasks safely on one Linux device.
 - [x] Deterministic filesystem, network, and tool capability policy evaluation.
 - [x] Bounded pending approvals and linear one-time approval grants.
 - [ ] Stable local API compatibility contract.
-- [ ] Encrypted Task-input storage and resumable recovery.
+- [ ] Deterministic non-resumable restart handling for active Tasks; encrypted resumable execution is deferred beyond v0.1.
 - [x] Approval audit events, cancellation invalidation, and timeout enforcement.
 - [x] Approval-aware in-process execution gate with complete-operation retention.
 - [x] Bounded in-process Tool Catalog and Handler adapter without shell execution.
@@ -47,6 +49,8 @@ Exit criteria:
 - Permission, approval, and cancellation acceptance criteria pass.
 - Tests block unauthorized network and filesystem operations.
 - Task state can be recovered after a runtime restart.
+
+Completing this phase alone does not complete v0.1. Resource enforcement and the minimum end-to-end developer workflow are supplied by Phases 2 and 3 and remain subject to the Definition of Done.
 
 ## Phase 2: Resource-Aware Execution
 
@@ -94,3 +98,7 @@ Exit criteria:
 - Measured bottlenecks and user impact are documented.
 - User-space, Linux-extension, and custom-kernel alternatives are compared.
 - Security and rollback procedures exist for every OS-level change.
+
+## v0.1 release boundary
+
+v0.1 combines the safe execution boundary from Phase 1, mandatory CPU/RAM/wall-time enforcement from Phase 2, and the minimum local-model developer workflow from Phase 3. Phase 4 is not required for v0.1 unless measurement shows that an existing Linux facility cannot satisfy a mandatory release gate.

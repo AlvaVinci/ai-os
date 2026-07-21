@@ -179,6 +179,8 @@ The project must not describe Phase 1 as a safe OS-enforced runtime until all of
 - tamper-evident audit export or a documented local-audit limitation;
 - dependency and release integrity checks.
 
+These security gates are mandatory inputs to [DOD-008](definition-of-done.md#dod-008-audit-privacy-and-release-integrity). Phase or roadmap completion cannot waive them.
+
 ## Review cadence
 
 Update this model whenever a new adapter, persisted sensitive field, approval surface, external service, OS privilege, or concurrency mechanism is introduced. Every security-relevant architecture decision should link to the affected Threat IDs and Security Objectives.
