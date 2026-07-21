@@ -66,6 +66,7 @@ Read more:
 - [Capability model](docs/capability-model.md)
 - [Capability policy](docs/capability-policy.md)
 - [Approval grants](docs/approval-grants.md)
+- [Agent runtime and Model Adapter contract](docs/agent-runtime.md)
 - [Tool adapter](docs/tool-adapter.md)
 - [Process adapter](docs/process-adapter.md)
 - [Developer workloads and benchmarks](benchmarks/README.md)
@@ -104,6 +105,9 @@ Implemented:
 - policy-bound approval lifecycle with exact operation matching and audit events
 - approval invalidation on denial, expiration, cancellation, and terminal Task states
 - guarded adapter execution with complete-operation retention across approval
+- bounded Task-scoped Model Adapter and session contracts
+- deterministic scripted Model Adapter for conformance tests
+- synchronous single-Task Agent execution with bounded model turns and approval-aware Tool routing
 - bounded in-process Tool Catalog and Handler adapter without shell execution
 - bounded child-process Tool handler with explicit executable identity, argument policy, clean environment, and direct-child timeout
 - three versioned developer workload fixtures with tested Capability and approval boundaries
@@ -113,7 +117,7 @@ Not implemented yet:
 - operating-system enforcement of capabilities
 - principal-separated approval API and operating-system isolation adapters
 - post-v0.1 encrypted Task input and resumable execution recovery
-- model execution and isolated out-of-process Tool execution
+- real local model inference and OS-isolated out-of-process Tool execution
 - resource usage enforcement and monitoring
 
 ## Development

@@ -20,6 +20,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "aios-agent"
+version = "0.1.0"
+dependencies = [
+ "aios-adapter-tool",
+ "aios-core",
+ "aios-runtime",
+]
+
+[[package]]
 name = "aios-core"
 version = "0.1.0"
 dependencies = [

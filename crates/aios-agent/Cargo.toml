@@ -1,0 +1,16 @@
+[package]
+name = "aios-agent"
+version = "0.1.0"
+description = "Bounded Agent execution and model adapter contracts for AI OS"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+aios-adapter-tool = { path = "../aios-adapter-tool" }
+aios-core = { path = "../aios-core" }
+aios-runtime = { path = "../aios-runtime" }

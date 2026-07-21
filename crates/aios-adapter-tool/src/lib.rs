@@ -249,6 +249,21 @@ impl ToolCatalog {
     pub fn route_count(&self) -> usize {
         self.definitions.len()
     }
+
+    /// Returns only routes whose fixed Capability Tool is granted to the Task.
+    pub fn route_names_for_tools<'a>(
+        &'a self,
+        capability_tools: &'a [String],
+    ) -> impl Iterator<Item = &'a str> {
+        self.definitions
+            .iter()
+            .filter(move |(_, definition)| {
+                capability_tools
+                    .iter()
+                    .any(|tool| tool == &definition.capability_tool)
+            })
+            .map(|(route, _)| route.as_str())
+    }
 }
 
 struct ToolAdapter {

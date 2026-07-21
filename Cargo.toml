@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "crates/aios-agent",
     "crates/aios-adapter-process",
     "crates/aios-adapter-tool",
     "crates/aios-core",
