@@ -114,6 +114,26 @@ pub struct TaskSnapshot {
     pub state: TaskState,
 }
 
+/// Sensitive Task input released only to trusted in-process execution code.
+///
+/// This type intentionally does not implement `Clone`, `Debug`, or serialization.
+pub struct TaskExecutionInput {
+    goal: String,
+    capability_tools: Vec<String>,
+}
+
+impl TaskExecutionInput {
+    #[must_use]
+    pub fn goal(&self) -> &str {
+        &self.goal
+    }
+
+    #[must_use]
+    pub fn capability_tools(&self) -> &[String] {
+        &self.capability_tools
+    }
+}
+
 /// Result of submitting a task specification.
 #[derive(Debug)]
 pub enum SubmitResult {
@@ -315,6 +335,24 @@ impl<S: EventStore> TaskSupervisor<S> {
 
     pub fn start(&mut self, task_id: TaskId) -> Result<(), SupervisorError> {
         self.transition(task_id, TaskState::Running)
+    }
+
+    /// Starts one queued Task and releases its goal to trusted execution code only after audit.
+    pub fn start_execution(
+        &mut self,
+        task_id: TaskId,
+    ) -> Result<TaskExecutionInput, SupervisorError> {
+        let record = self
+            .tasks
+            .get(&task_id)
+            .ok_or(SupervisorError::TaskNotFound)?;
+        let goal = record.spec.goal.clone();
+        let capability_tools = record.spec.capabilities.tools.clone();
+        self.start(task_id)?;
+        Ok(TaskExecutionInput {
+            goal,
+            capability_tools,
+        })
     }
 
     /// Evaluates one exact operation and records the decision before returning it.

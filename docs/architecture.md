@@ -4,8 +4,9 @@
 
 Draft. The architecture will evolve from MVP implementation and measurement.
 
-The repository currently contains six crates:
+The repository currently contains seven crates:
 
+- `aios-agent`: bounded model-session contracts and synchronous approval-aware Agent execution
 - `aios-adapter-process`: bounded child-process Tool handler with explicit executable configuration
 - `aios-adapter-tool`: bounded catalog and in-process handler execution behind `ExecutionGate`
 - `aios-core`: Task contracts, validation, stable error codes, and lifecycle states
@@ -100,6 +101,17 @@ The current supervisor integrates the process-local `ApprovalAuthority` with cap
 
 The gate is an in-process authorization boundary, not an operating-system sandbox. Concrete adapters must prevent direct subprocess, file-descriptor, network, and device access outside the gate. Model and tool processes must not receive the daemon control socket or raw adapter handles.
 
+### Agent Runtime
+
+- Starts one Task-scoped model session from a validated goal and only the Tool routes granted to that Task.
+- Accepts only bounded final-output or Tool-call decisions.
+- Reconstructs every Tool operation through the trusted catalog before Capability evaluation.
+- Bounds model turns and retains at most one active model session per runtime instance.
+- Retains a waiting session across approval and resumes it only after the exact retained operation executes.
+- Fails the Task on invalid decisions, unknown routes, model failures, Tool failures, and step exhaustion.
+
+The current `aios-agent` crate supplies a deterministic scripted Model Adapter for conformance tests. It does not perform inference and does not satisfy the real local model requirement. Model requests, decisions, outputs, and Task execution input omit debug and serialization implementations because they may contain sensitive values. See [Agent runtime and Model Adapter contract](agent-runtime.md).
+
 ### Tool Adapter
 
 - Maps model-visible routes to capability tool and action identifiers fixed by trusted registration.
@@ -128,6 +140,8 @@ The current Process Adapter is a constrained `ToolHandler`, not a sandbox. It do
 - Prefer local execution by default.
 - Use external models only after explicit permission and data-scope evaluation.
 - Adapt model-specific input and output to common contracts.
+
+The initial Task-scoped `ModelAdapter` and `ModelSession` contracts live in `aios-agent`. A future local inference adapter must parse backend output into bounded `ModelDecision` values, apply inference deadlines, identify model artifacts, and prevent context from crossing Task sessions.
 
 ### Resource Scheduler
 
