@@ -11,7 +11,10 @@ use std::time::Duration;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 
 use aios_core::TaskState;
-use aios_runtime::{EventStore, EventStoreError, TaskEvent, TaskEventKind, TaskId, TaskSnapshot};
+use aios_runtime::{
+    EventStore, EventStoreError, RecoverableEventStore, TaskEvent, TaskEventKind, TaskId,
+    TaskSnapshot,
+};
 use rusqlite::{Connection, TransactionBehavior, params};
 
 const SCHEMA_VERSION: i64 = 1;
@@ -249,12 +252,19 @@ impl EventStore for SqliteEventStore {
     }
 }
 
+impl RecoverableEventStore for SqliteEventStore {
+    fn recover_task_snapshots(&self) -> Result<Vec<TaskSnapshot>, EventStoreError> {
+        Self::recover_task_snapshots(self)
+    }
+}
+
 fn recover_snapshot(
     task_id: TaskId,
     events: &[TaskEvent],
 ) -> Result<TaskSnapshot, EventStoreError> {
     let mut state = None;
     let mut expected_sequence = 1_u64;
+    let mut pending_failure = false;
 
     for event in events {
         if event.sequence != expected_sequence {
@@ -264,6 +274,19 @@ fn recover_snapshot(
             .checked_add(1)
             .ok_or(EventStoreError::SequenceExhausted)?;
 
+        if pending_failure {
+            match &event.kind {
+                TaskEventKind::StateTransitioned { from, to }
+                    if state == Some(*from) && *to == TaskState::Failed =>
+                {
+                    state = Some(*to);
+                    pending_failure = false;
+                    continue;
+                }
+                _ => return Err(EventStoreError::Corrupt),
+            }
+        }
+
         match event.kind.clone() {
             TaskEventKind::Submitted if state.is_none() => state = Some(TaskState::Submitted),
             TaskEventKind::StateTransitioned { from, to }
@@ -272,6 +295,11 @@ fn recover_snapshot(
                 state = Some(to);
             }
             TaskEventKind::ValidationFailed { .. } if state == Some(TaskState::Validating) => {}
+            TaskEventKind::TaskFailed { .. }
+                if state.is_some_and(|current| !current.is_terminal()) =>
+            {
+                pending_failure = true;
+            }
             TaskEventKind::OperationAllowed | TaskEventKind::OperationDenied { .. }
                 if state == Some(TaskState::Running) => {}
             TaskEventKind::ApprovalRequested { .. } if state == Some(TaskState::Running) => {}
@@ -285,6 +313,7 @@ fn recover_snapshot(
             TaskEventKind::Submitted
             | TaskEventKind::StateTransitioned { .. }
             | TaskEventKind::ValidationFailed { .. }
+            | TaskEventKind::TaskFailed { .. }
             | TaskEventKind::OperationAllowed
             | TaskEventKind::OperationDenied { .. }
             | TaskEventKind::ApprovalRequested { .. }
@@ -294,6 +323,10 @@ fn recover_snapshot(
             | TaskEventKind::ApprovalRevoked { .. }
             | TaskEventKind::ApprovalConsumed { .. } => return Err(EventStoreError::Corrupt),
         }
+    }
+
+    if pending_failure {
+        return Err(EventStoreError::Corrupt);
     }
 
     state
@@ -336,9 +369,10 @@ mod tests {
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
 
-    use aios_core::TaskState;
+    use aios_core::{ErrorCode, TaskSpec, TaskState};
     use aios_runtime::{
-        ApprovalAuthority, EventStore, EventStoreError, OperationId, TaskEventKind, TaskId,
+        ApprovalAuthority, EventStore, EventStoreError, OperationId, SubmitResult, TaskEventKind,
+        TaskId, TaskSupervisor,
     };
     use rusqlite::params;
 
@@ -489,6 +523,194 @@ mod tests {
         assert_eq!(snapshots.len(), 1);
         assert_eq!(snapshots[0].task_id, task_id);
         assert_eq!(snapshots[0].state, TaskState::Succeeded);
+    }
+
+    #[test]
+    fn restart_fails_non_terminal_tasks_once_and_preserves_terminal_tasks() {
+        let database = TestDatabase::new();
+        let queued_task = TaskId::new();
+        let running_task = TaskId::new();
+        let waiting_task = TaskId::new();
+        let succeeded_task = TaskId::new();
+
+        {
+            let mut store = SqliteEventStore::open(database.path(), 100).expect("open database");
+            for task_id in [queued_task, running_task, waiting_task, succeeded_task] {
+                store
+                    .append_batch(task_id, &queued_events())
+                    .expect("append queued task");
+            }
+            for task_id in [running_task, waiting_task, succeeded_task] {
+                store
+                    .append_batch(
+                        task_id,
+                        &[TaskEventKind::StateTransitioned {
+                            from: TaskState::Queued,
+                            to: TaskState::Running,
+                        }],
+                    )
+                    .expect("append running state");
+            }
+            let operation_id = OperationId::new();
+            let mut authority = ApprovalAuthority::default();
+            let approval = authority
+                .request(
+                    waiting_task,
+                    operation_id,
+                    "git.commit",
+                    Duration::from_secs(30),
+                )
+                .expect("request approval");
+            store
+                .append_batch(
+                    waiting_task,
+                    &[
+                        TaskEventKind::ApprovalRequested {
+                            approval_id: approval.approval_id,
+                            operation_id,
+                        },
+                        TaskEventKind::StateTransitioned {
+                            from: TaskState::Running,
+                            to: TaskState::WaitingApproval,
+                        },
+                    ],
+                )
+                .expect("append waiting state");
+            store
+                .append_batch(
+                    succeeded_task,
+                    &[TaskEventKind::StateTransitioned {
+                        from: TaskState::Running,
+                        to: TaskState::Succeeded,
+                    }],
+                )
+                .expect("append success state");
+        }
+
+        {
+            let store = SqliteEventStore::open(database.path(), 100).expect("reopen database");
+            let mut supervisor = TaskSupervisor::recover(store, 10).expect("recover supervisor");
+
+            for task_id in [queued_task, running_task, waiting_task] {
+                assert_eq!(
+                    supervisor.get(task_id).expect("recovered task").state,
+                    TaskState::Failed
+                );
+                let events = supervisor.events(task_id, 0).expect("recovered events");
+                assert!(matches!(
+                    events[events.len() - 2].kind,
+                    TaskEventKind::TaskFailed {
+                        code: ErrorCode::RuntimeRestarted
+                    }
+                ));
+                assert_eq!(
+                    events.last().expect("terminal transition").kind,
+                    TaskEventKind::StateTransitioned {
+                        from: match task_id {
+                            id if id == queued_task => TaskState::Queued,
+                            id if id == running_task => TaskState::Running,
+                            _ => TaskState::WaitingApproval,
+                        },
+                        to: TaskState::Failed,
+                    }
+                );
+            }
+
+            assert_eq!(
+                supervisor.get(succeeded_task).expect("terminal task").state,
+                TaskState::Succeeded
+            );
+            assert_eq!(
+                supervisor
+                    .events(succeeded_task, 0)
+                    .expect("terminal events")
+                    .len(),
+                5
+            );
+
+            let task: TaskSpec = serde_json::from_str(include_str!("../../../examples/task.json"))
+                .expect("valid example task");
+            let SubmitResult::Accepted(resubmitted) =
+                supervisor.submit(task).expect("explicit resubmission")
+            else {
+                panic!("resubmission must create a new Task");
+            };
+            assert!(
+                ![queued_task, running_task, waiting_task, succeeded_task]
+                    .contains(&resubmitted.task_id)
+            );
+        }
+
+        let store = SqliteEventStore::open(database.path(), 100).expect("reopen database again");
+        let supervisor = TaskSupervisor::recover(store, 10).expect("repeat recovery");
+        assert_eq!(
+            supervisor
+                .events(queued_task, 0)
+                .expect("queued events")
+                .len(),
+            5
+        );
+        assert_eq!(
+            supervisor
+                .events(running_task, 0)
+                .expect("running events")
+                .len(),
+            6
+        );
+        assert_eq!(
+            supervisor
+                .events(waiting_task, 0)
+                .expect("waiting events")
+                .len(),
+            8
+        );
+    }
+
+    #[test]
+    fn restart_audit_failure_prevents_supervisor_recovery() {
+        let database = TestDatabase::new();
+        let task_id = TaskId::new();
+        {
+            let mut store = SqliteEventStore::open(database.path(), 3).expect("open database");
+            store
+                .append_batch(task_id, &queued_events())
+                .expect("append queued task");
+        }
+
+        let store = SqliteEventStore::open(database.path(), 3).expect("reopen database");
+        assert!(matches!(
+            TaskSupervisor::recover(store, 10),
+            Err(aios_runtime::SupervisorError::EventStore(
+                EventStoreError::CapacityExceeded
+            ))
+        ));
+
+        let store = SqliteEventStore::open(database.path(), 100).expect("inspect database");
+        let snapshots = store.recover_task_snapshots().expect("recover snapshots");
+        assert_eq!(snapshots[0].state, TaskState::Queued);
+        assert_eq!(store.list(task_id, 0).expect("events").len(), 3);
+    }
+
+    #[test]
+    fn rejects_unpaired_failure_category_during_recovery() {
+        let mut store = SqliteEventStore::open_in_memory(100).expect("open database");
+        let task_id = TaskId::new();
+        store
+            .append_batch(task_id, &queued_events())
+            .expect("append queued task");
+        store
+            .append_batch(
+                task_id,
+                &[TaskEventKind::TaskFailed {
+                    code: ErrorCode::RuntimeRestarted,
+                }],
+            )
+            .expect("append incomplete failure");
+
+        assert_eq!(
+            store.recover_task_snapshots(),
+            Err(EventStoreError::Corrupt)
+        );
     }
 
     #[test]

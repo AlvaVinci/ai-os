@@ -2,9 +2,9 @@
 
 ## Status
 
-Experimental Protocol Version 3. The version number is explicit, but the framing and schema may still change before the first stable release.
+Experimental Protocol Version 4. The version number is explicit, but the framing and schema may still change before the first stable release.
 
-Version 3 replaces Version 2 host-only network allowlists with exact TCP destinations containing a host and non-zero port. Version 3 retains Version 2's removal of the Version 1 `wait_for_approval` and `approve` methods. Those methods changed Task state using only a Task ID and were not bound to a policy-evaluated operation. Approval remains available through the trusted runtime API until a resource-safe local API schema is defined.
+Version 4 adds the audit-safe `task_failed` Event with a stable failure code, including `RUNTIME_RESTARTED`. Version 3 replaced Version 2 host-only network allowlists with exact TCP destinations containing a host and non-zero port. Version 3 retained Version 2's removal of the Version 1 `wait_for_approval` and `approve` methods. Those methods changed Task state using only a Task ID and were not bound to a policy-evaluated operation. Approval remains available through the trusted runtime API until a resource-safe local API schema is defined.
 
 ## Transport
 
@@ -34,21 +34,21 @@ These checks restrict access to the local operating-system user. Explicit peer-c
 
 ## Requests
 
-Every request uses an envelope with `protocol_version` and a tagged `request` object. Protocol Version 3 is the only supported version. Missing, unknown, or unsupported versions are rejected; unknown fields are also rejected.
+Every request uses an envelope with `protocol_version` and a tagged `request` object. Protocol Version 4 is the only supported version. Missing, unknown, or unsupported versions are rejected; unknown fields are also rejected.
 
-The server reads the bounded envelope version before deserializing the method or Task body. A Version 2 request therefore receives `UNSUPPORTED_PROTOCOL_VERSION` even when its legacy Task shape is invalid under Version 3; old Capability data is never reinterpreted under new semantics.
+The server reads the bounded envelope version before deserializing the method or Task body. A Version 3 request therefore receives `UNSUPPORTED_PROTOCOL_VERSION`; old response and Event schemas are never reinterpreted under new semantics.
 
 ### Health
 
 ```json
-{"protocol_version":3,"request":{"method":"health"}}
+{"protocol_version":4,"request":{"method":"health"}}
 ```
 
 ### Submit
 
 ```json
 {
-  "protocol_version": 3,
+  "protocol_version": 4,
   "request": {
     "method": "submit",
     "task": {
@@ -74,7 +74,7 @@ The server reads the bounded envelope version before deserializing the method or
 }
 ```
 
-Protocol Version 3 network allowlists use complete destinations:
+Protocol Version 4 retains complete network destinations introduced by Version 3:
 
 ```json
 {
@@ -108,7 +108,7 @@ Every response declares the server's protocol version. Successful responses use 
 
 ```json
 {
-  "protocol_version": 3,
+  "protocol_version": 4,
   "status": "error",
   "error": {
     "code": "INVALID_STATE_TRANSITION",
@@ -119,9 +119,21 @@ Every response declares the server's protocol version. Successful responses use 
 
 Internal I/O errors, database details, Task goals, and capability values are not included in API errors.
 
+## Restart behavior
+
+`aiosd` completes recovery before accepting work:
+
+1. The configured Unix socket is bound first, excluding another daemon using the same socket path without accepting requests yet.
+2. SQLite Events are validated and reduced to public Task ID and state snapshots.
+3. Every non-terminal snapshot receives one atomic `task_failed` Event with code `RUNTIME_RESTARTED` followed by its transition to `failed`.
+4. Terminal Tasks remain unchanged. A later restart observes the terminal transition and does not append another failure.
+5. Any corrupt sequence, capacity failure, or audit write failure aborts daemon startup and removes only the exact socket it created.
+
+Recovered Task IDs remain available through `get_task` and `events`. Goals, Capabilities, model state, Tool arguments, pending operations, approval grants, and idempotency keys are never reconstructed from Events. Reusing a prior idempotency key after restart therefore creates a new Task only when the user explicitly submits it; the old Task is never executed again. Recovered Tasks count toward the configured Task capacity. One database must not be shared by daemons configured with different socket paths; database-level ownership enforcement remains future work.
+
 ## Command-line client
 
-`aiosctl` speaks Protocol Version 3 and prints the complete JSON response. A Task file is read with a strict 65,536-byte limit before JSON parsing.
+`aiosctl` speaks Protocol Version 4 and prints the complete JSON response. A Task file is read with a strict 65,536-byte limit before JSON parsing.
 
 ```bash
 aiosctl --socket /path/to/aiosd.sock health
@@ -138,8 +150,8 @@ Successful API responses exit with code `0`, API errors and invalid CLI input wi
 
 ## Current limitations
 
-- Protocol Version 3 is experimental and does not yet carry a long-term compatibility guarantee.
+- Protocol Version 4 is experimental and does not yet carry a long-term compatibility guarantee.
 - Policy-bound approval requests are not exposed through the local API yet.
-- Task input and idempotency state are not restored after daemon restart.
+- Task input and process-local idempotency state are not restored after daemon restart; resumable execution remains out of scope for v0.1.
 - Malformed clients are isolated, but one local user can still consume time by repeatedly opening connections.
 - Graceful signal handling and stale-socket recovery are not implemented.

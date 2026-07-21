@@ -4,7 +4,7 @@ use std::fmt::{self, Display, Formatter};
 use std::str::FromStr;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use aios_core::{DenialReason, TaskState};
+use aios_core::{DenialReason, ErrorCode, TaskState};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -84,6 +84,9 @@ pub enum TaskEventKind {
     ValidationFailed {
         error_count: usize,
     },
+    TaskFailed {
+        code: ErrorCode,
+    },
     OperationAllowed,
     OperationDenied {
         reason: DenialReason,
@@ -151,6 +154,14 @@ pub trait EventStore {
     /// Returns events with a sequence greater than `after_sequence`.
     fn list(&self, task_id: TaskId, after_sequence: u64)
     -> Result<Vec<TaskEvent>, EventStoreError>;
+}
+
+/// Event Store that can reconstruct audit-safe public Task snapshots.
+///
+/// Implementations must not restore Task input, model state, Tool operations,
+/// approval grants, or other execution authority.
+pub trait RecoverableEventStore: EventStore {
+    fn recover_task_snapshots(&self) -> Result<Vec<crate::TaskSnapshot>, EventStoreError>;
 }
 
 /// Bounded, process-local event store for early runtime development and tests.
@@ -247,7 +258,7 @@ fn unix_time_ms() -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use aios_core::TaskState;
+    use aios_core::{ErrorCode, TaskState};
 
     use super::{EventStore, EventStoreError, InMemoryEventStore, TaskEventKind, TaskId};
 
@@ -315,5 +326,15 @@ mod tests {
                 .expect("events should list")
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn serializes_restart_failure_as_a_stable_resource_free_event() {
+        let json = serde_json::to_string(&TaskEventKind::TaskFailed {
+            code: ErrorCode::RuntimeRestarted,
+        })
+        .expect("serialize failure event");
+
+        assert_eq!(json, r#"{"type":"task_failed","code":"RUNTIME_RESTARTED"}"#);
     }
 }

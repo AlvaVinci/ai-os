@@ -62,11 +62,14 @@ The current implementation is synchronous and process-local. It limits the numbe
 - Uses a four-byte length prefix and bounded JSON payloads.
 - Handles one request per connection with read and write timeouts.
 - Requires an explicit protocol version and rejects unsupported versions.
+- Establishes the configured socket-path exclusion, then recovers audit-safe public Task state before accepting requests.
 - Processes connections sequentially to keep concurrency bounded in the MVP.
 - Refuses to replace an existing socket path and removes only the exact socket inode it created.
 - Returns stable error categories without internal I/O or storage details.
 
-`aiosctl` uses the same Protocol Version 3 types as the daemon for submission, inspection, event retrieval, and lifecycle transitions. Version 3 replaces host-only network allowlists with exact TCP destinations. It retains Version 2's removal of the unsafe Task-ID-only approval methods from Version 1. The daemon currently loses Task input and in-memory idempotency state on restart. Persisted audit events remain available through the SQLite layer.
+`aiosctl` uses the same Protocol Version 4 types as the daemon for submission, inspection, event retrieval, and lifecycle transitions. Version 4 adds the audit-safe `task_failed` Event carrying a stable failure code. Version 3 replaced host-only network allowlists with exact TCP destinations and retained Version 2's removal of the unsafe Task-ID-only approval methods from Version 1.
+
+After binding the configured control socket but before accepting requests, `aiosd` reconstructs public Task snapshots from SQLite. Every previously non-terminal Task receives an atomic `RUNTIME_RESTARTED` failure Event and transition to `failed`; terminal Tasks remain unchanged, and repeated restarts do not append duplicate failure Events. Any recovery or audit write failure aborts startup and drops the exact socket it created. Goals, Capabilities, idempotency keys, model sessions, Tool operations, and approval authority are not reconstructed. A post-restart submission is always a new explicit Task, even if its idempotency key was used by a previous daemon process. Sharing one database across different socket paths is not supported or prevented yet.
 
 ### Policy & Capability Engine
 
@@ -88,7 +91,7 @@ This policy layer does not yet enforce operating-system access. Runtime adapters
 - Returns a linear grant that cannot be cloned, debugged, or serialized.
 - Consumes the grant on every authorization attempt, including scope mismatch and expiration.
 
-The current supervisor integrates the process-local `ApprovalAuthority` with capability evaluation, exact in-memory capability binding, Task state, and resource-free audit events. `ExecutionGate` additionally retains the complete typed operation and invokes its private adapter only after allow or successful grant consumption. Approval IDs are public identifiers, not bearer secrets. Cancellation and terminal transitions invalidate unused authority, while audit persistence failures leave state unchanged or fail closed. Local API exposure, restart recovery of live grants, and concrete operating-system adapters remain future work. See [Approval grants](approval-grants.md).
+The current supervisor integrates the process-local `ApprovalAuthority` with capability evaluation, exact in-memory capability binding, Task state, and resource-free audit events. `ExecutionGate` additionally retains the complete typed operation and invokes its private adapter only after allow or successful grant consumption. Approval IDs are public identifiers, not bearer secrets. Cancellation and terminal transitions invalidate unused authority, while audit persistence failures leave state unchanged or fail closed. Restart recovery deliberately discards all live grants and operations; restoring them is outside the v0.1 non-resumable contract. Local API exposure for a principal-separated approval workflow and concrete operating-system adapters remain future work. See [Approval grants](approval-grants.md).
 
 ### Execution Gate
 
@@ -165,7 +168,7 @@ The initial Task-scoped `ModelAdapter` and `ModelSession` contracts live in `aio
 - Use structured reason codes and minimal explanations.
 - Bound resource usage and fail atomically when a batch cannot be stored.
 
-The `InMemoryEventStore` assigns a monotonically increasing sequence per Task and enforces a configurable event limit. `SqliteEventStore` adds transactional batches, schema versioning, owner-only file creation on Unix, corrupt-sequence detection, and restart-safe recovery of public Task state.
+The `InMemoryEventStore` assigns a monotonically increasing sequence per Task and enforces a configurable event limit. `SqliteEventStore` adds transactional batches, schema versioning, owner-only file creation on Unix, corrupt or incomplete failure-sequence detection, and restart-safe recovery of public Task state. The Supervisor records the stable `RUNTIME_RESTARTED` category and terminal transition before a recovered Task becomes visible through the daemon.
 
 The SQLite store deliberately does not persist Task goals or capability values. Resuming execution after a restart requires a separate encrypted Task-input design. Tamper evidence is also future work.
 

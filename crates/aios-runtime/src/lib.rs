@@ -13,7 +13,8 @@ pub use approval::{
     OperationId,
 };
 pub use event::{
-    EventStore, EventStoreError, InMemoryEventStore, TaskEvent, TaskEventKind, TaskId,
+    EventStore, EventStoreError, InMemoryEventStore, RecoverableEventStore, TaskEvent,
+    TaskEventKind, TaskId,
 };
 pub use execution::{
     Executed, ExecutionAdapter, ExecutionError, ExecutionGate, ExecutionOutcome, GuardedOperation,
