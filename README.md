@@ -133,6 +133,8 @@ cargo test --workspace --all-targets --locked
 cargo clippy --workspace --all-targets --locked -- -D warnings
 ```
 
+The `Linux sandbox` workflow additionally runs the ignored Bubblewrap boundary suite on the pinned `ubuntu-22.04` runner image. Local Linux hosts can run the same suite with the command documented in [Process adapter](docs/process-adapter.md#linux-boundary-verification).
+
 See [examples/task.json](examples/task.json) for a task input example. Tests load this file directly to detect schema drift.
 
 Run the experimental daemon in a private temporary directory:

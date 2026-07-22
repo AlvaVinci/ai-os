@@ -1,0 +1,47 @@
+name: Linux sandbox
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: linux-sandbox-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  bubblewrap-isolation:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install sandbox dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends bubblewrap busybox-static
+          /usr/bin/bwrap --version
+
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.97.1 --profile minimal --component clippy,rustfmt
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Run workspace tests
+        run: cargo test --workspace --all-targets --locked
+
+      - name: Run Linux Bubblewrap boundary tests
+        env:
+          AIOS_BWRAP_PATH: /usr/bin/bwrap
+          AIOS_BUSYBOX_PATH: /usr/bin/busybox
+        run: cargo test -p aios-adapter-process --test linux_bubblewrap --locked -- --ignored
+
+      - name: Run Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings

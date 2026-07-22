@@ -163,7 +163,7 @@ Submission, state transitions, and approval batches fail without applying the co
 | SEC-005 | cancellation, denial, expiry, and terminal invalidation tests | concurrent race tests when concurrency is added |
 | SEC-006 | resource-free Event serialization and redacted error tests | log and crash-report review |
 | SEC-007 | capacity tests across API, Event, approval, gate, and Tool Adapter | CPU, disk, model context, and connection-rate tests |
-| SEC-008 / SEC-009 | private in-process adapters, Bubblewrap launch-plan tests, and documented boundary | Linux sandbox escape, descriptor, filesystem race, descendant, control-socket, and network destination tests |
+| SEC-008 / SEC-009 | private in-process adapters, Bubblewrap launch-plan tests, and a Linux boundary suite for root/scratch visibility, descriptor closure, control-socket invisibility, and host-network denial | filesystem race, descendant cleanup, Task-derived mount, and approved network destination tests |
 | SEC-010 | identifier-only approval tests and API removal | ownership authorization tests for future APIs |
 
 ## Release gates
