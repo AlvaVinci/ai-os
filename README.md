@@ -112,7 +112,7 @@ Implemented:
 - synchronous single-Task Agent execution with bounded model turns and approval-aware Tool routing
 - bounded in-process Tool Catalog and Handler adapter without shell execution
 - bounded child-process Tool handler with explicit executable identity, argument policy, clean environment, and direct-child timeout
-- experimental Linux Bubblewrap launch plan with a prepared read-only root, one writable scratch mount, namespace isolation, and deny-by-construction host network
+- experimental Linux Bubblewrap launch plan with a prepared read-only root, fresh Task-ID-scoped scratch, namespace isolation, and deny-by-construction host network
 - three versioned developer workload fixtures with tested Capability and approval boundaries
 
 Not implemented yet:

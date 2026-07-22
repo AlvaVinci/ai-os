@@ -1,17 +1,21 @@
 #![cfg(target_os = "linux")]
 
 use std::env;
-use std::fs::{self, OpenOptions};
+use std::fs::{self, DirBuilder, OpenOptions};
 use std::io::{self, Read, Write};
 use std::net::TcpListener;
 use std::os::fd::AsRawFd;
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use aios_adapter_process::{BubblewrapProcessToolBuilder, ProcessAdapterError, ProcessToolBuilder};
+use aios_adapter_process::{
+    BubblewrapProcessToolBuilder, ProcessAdapterError, ProcessToolBuilder, TaskScratch,
+    TaskScratchManager,
+};
+use aios_runtime::TaskId;
 
 const TEST_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_HTTP_REQUEST_BYTES: usize = 8 * 1_024;
@@ -25,7 +29,7 @@ struct SandboxFixture {
     bubblewrap: PathBuf,
     busybox: PathBuf,
     root_filesystem: PathBuf,
-    scratch_directory: PathBuf,
+    task_scratch: TaskScratch,
     host_directory: PathBuf,
 }
 
@@ -39,10 +43,14 @@ impl SandboxFixture {
             "aios-bubblewrap-{label}-{}-{nonce}",
             std::process::id()
         ));
-        fs::create_dir(&base).expect("create unique sandbox fixture");
+        let mut directory_builder = DirBuilder::new();
+        directory_builder.mode(0o700);
+        directory_builder
+            .create(&base)
+            .expect("create unique sandbox fixture");
 
         let root_filesystem = base.join("rootfs");
-        let scratch_directory = base.join("scratch");
+        let scratch_root = base.join("tasks");
         let host_directory = base.join("host-only");
         for directory in [
             root_filesystem.join("bin"),
@@ -50,11 +58,17 @@ impl SandboxFixture {
             root_filesystem.join("dev"),
             root_filesystem.join("tmp"),
             root_filesystem.join("workspace"),
-            scratch_directory.clone(),
             host_directory.clone(),
         ] {
             fs::create_dir_all(directory).expect("create sandbox fixture directory");
         }
+        directory_builder
+            .create(&scratch_root)
+            .expect("create Task scratch root");
+        let task_scratch = TaskScratchManager::new(&scratch_root)
+            .expect("open Task scratch root")
+            .create(TaskId::new())
+            .expect("create Task scratch directory");
 
         let bubblewrap = required_executable("AIOS_BWRAP_PATH");
         let busybox = required_executable("AIOS_BUSYBOX_PATH");
@@ -68,7 +82,7 @@ impl SandboxFixture {
             bubblewrap,
             busybox,
             root_filesystem,
-            scratch_directory,
+            task_scratch,
             host_directory,
         }
     }
@@ -87,11 +101,11 @@ impl SandboxFixture {
         dynamic_arguments: Vec<String>,
         timeout: Duration,
     ) -> Result<(), ProcessAdapterError> {
-        let mut handler = BubblewrapProcessToolBuilder::new(
+        let mut handler = BubblewrapProcessToolBuilder::new_for_task(
             &self.bubblewrap,
             &self.root_filesystem,
             "/bin/busybox",
-            &self.scratch_directory,
+            &self.task_scratch,
             |_: &[String]| true,
         )
         .fixed_arguments(
@@ -130,7 +144,7 @@ fn linux_sandbox_enforces_filesystem_socket_and_descriptor_boundaries() {
     fixture
         .run_sandbox(&["touch"], vec!["/workspace/created".to_owned()])
         .expect("scratch must be writable");
-    assert!(fixture.scratch_directory.join("created").is_file());
+    assert!(fixture.task_scratch.directory().join("created").is_file());
 
     assert!(matches!(
         fixture.run_sandbox(&["touch"], vec!["/root-write-must-fail".to_owned()]),
@@ -175,7 +189,8 @@ fn linux_sandbox_terminates_descendants_after_initial_process_exit() {
         .expect("initial sandbox process must exit successfully");
     assert!(
         fixture
-            .scratch_directory
+            .task_scratch
+            .directory()
             .join("exit-descendant-started")
             .is_file(),
         "background descendant must start before the initial process exits"
@@ -184,7 +199,8 @@ fn linux_sandbox_terminates_descendants_after_initial_process_exit() {
     thread::sleep(DESCENDANT_OBSERVATION_DELAY);
     assert!(
         !fixture
-            .scratch_directory
+            .task_scratch
+            .directory()
             .join("exit-descendant-survived")
             .exists(),
         "background descendant must not survive the initial process"
@@ -206,7 +222,8 @@ fn linux_sandbox_terminates_descendants_after_timeout() {
     ));
     assert!(
         fixture
-            .scratch_directory
+            .task_scratch
+            .directory()
             .join("timeout-descendant-started")
             .is_file(),
         "background descendant must start before timeout enforcement"
@@ -215,7 +232,8 @@ fn linux_sandbox_terminates_descendants_after_timeout() {
     thread::sleep(DESCENDANT_OBSERVATION_DELAY);
     assert!(
         !fixture
-            .scratch_directory
+            .task_scratch
+            .directory()
             .join("timeout-descendant-survived")
             .exists(),
         "background descendant must not survive timeout enforcement"
@@ -293,10 +311,13 @@ fn verify_busybox_wget_can_reach_host(fixture: &SandboxFixture) {
         }
     });
 
-    let output = fixture.scratch_directory.join("direct-network-output");
+    let output = fixture
+        .task_scratch
+        .directory()
+        .join("direct-network-output");
     let mut handler = ProcessToolBuilder::new(
         &fixture.busybox,
-        &fixture.scratch_directory,
+        fixture.task_scratch.directory(),
         |arguments: &[String]| arguments.len() == 1,
     )
     .fixed_arguments(vec![
