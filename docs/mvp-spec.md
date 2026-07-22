@@ -216,6 +216,8 @@ The versioned [developer workloads and benchmark protocol](../benchmarks/README.
 
 MVP persistence formats are not stable APIs. A format change increments the schema version and provides either migration from the immediately previous version or an explicit reset procedure.
 
+The Local API follows the separate [Local API Compatibility Contract](api-compatibility.md). Protocol Version 4 is the first stable schema; its support window, incompatible-change policy, security exception, migration, and rollback procedures are normative.
+
 ## 11. Alternatives and trade-offs
 
 - **Start with a custom kernel**: offers control but makes drivers, isolation, and distribution dominate MVP work.

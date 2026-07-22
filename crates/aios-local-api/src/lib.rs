@@ -23,9 +23,23 @@ use serde::{Deserialize, Serialize};
 pub const DEFAULT_MAX_FRAME_BYTES: usize = 64 * 1024;
 pub const DEFAULT_EVENT_PAGE_SIZE: u16 = 100;
 pub const MAX_EVENT_PAGE_SIZE: u16 = 256;
-pub const PROTOCOL_VERSION: u16 = 4;
+/// Oldest Local API protocol accepted by this daemon build.
+pub const MIN_SUPPORTED_PROTOCOL_VERSION: u16 = 4;
+/// Newest Local API protocol accepted by this daemon build.
+pub const MAX_SUPPORTED_PROTOCOL_VERSION: u16 = 4;
+/// Protocol selected by requests created by this crate.
+pub const PROTOCOL_VERSION: u16 = MAX_SUPPORTED_PROTOCOL_VERSION;
 const MIN_MAX_FRAME_BYTES: usize = 1024;
 const MAX_MAX_FRAME_BYTES: usize = 1024 * 1024;
+const _: () = assert!(MIN_SUPPORTED_PROTOCOL_VERSION <= MAX_SUPPORTED_PROTOCOL_VERSION);
+const _: () = assert!(
+    PROTOCOL_VERSION >= MIN_SUPPORTED_PROTOCOL_VERSION
+        && PROTOCOL_VERSION <= MAX_SUPPORTED_PROTOCOL_VERSION
+);
+
+const fn is_supported_protocol_version(version: u16) -> bool {
+    version >= MIN_SUPPORTED_PROTOCOL_VERSION && version <= MAX_SUPPORTED_PROTOCOL_VERSION
+}
 
 #[derive(Clone, Copy, Debug)]
 pub struct ServerConfig {
@@ -78,7 +92,7 @@ impl ApiRequest {
 #[derive(Deserialize, Serialize)]
 #[serde(tag = "method", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ApiMethod {
-    Health,
+    Health {},
     Submit {
         task: Box<TaskSpec>,
     },
@@ -123,7 +137,9 @@ pub enum ApiOutcome {
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ApiResult {
-    Healthy,
+    Healthy {
+        supported_protocol_versions: ProtocolVersionRange,
+    },
     Submitted {
         disposition: SubmissionDisposition,
         task: TaskView,
@@ -141,6 +157,24 @@ pub enum ApiResult {
         task: TaskView,
         changed: bool,
     },
+}
+
+/// Inclusive protocol-version window advertised by the daemon.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProtocolVersionRange {
+    pub minimum: u16,
+    pub maximum: u16,
+}
+
+impl ProtocolVersionRange {
+    #[must_use]
+    pub const fn supported() -> Self {
+        Self {
+            minimum: MIN_SUPPORTED_PROTOCOL_VERSION,
+            maximum: MAX_SUPPORTED_PROTOCOL_VERSION,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
@@ -204,7 +238,7 @@ impl<S: EventStore> ApiService<S> {
     }
 
     pub fn handle(&mut self, request: ApiRequest) -> ApiResponse {
-        if request.protocol_version != PROTOCOL_VERSION {
+        if !is_supported_protocol_version(request.protocol_version) {
             return api_error(
                 ApiErrorCode::UnsupportedProtocolVersion,
                 "protocol version is not supported",
@@ -212,7 +246,9 @@ impl<S: EventStore> ApiService<S> {
         }
 
         match request.request {
-            ApiMethod::Health => ok(ApiResult::Healthy),
+            ApiMethod::Health {} => ok(ApiResult::Healthy {
+                supported_protocol_versions: ProtocolVersionRange::supported(),
+            }),
             ApiMethod::Submit { task } => match self.supervisor.submit(*task) {
                 Ok(result) => submission_response(result),
                 Err(error) => supervisor_error_response(error),
@@ -394,7 +430,7 @@ fn serve_stream<S: EventStore>(
 ) -> Result<(), LocalApiError> {
     let response = match read_frame(stream, max_frame_bytes) {
         Ok(Some(payload)) => match serde_json::from_slice::<ProtocolProbe>(&payload) {
-            Ok(probe) if probe.protocol_version != PROTOCOL_VERSION => api_error(
+            Ok(probe) if !is_supported_protocol_version(probe.protocol_version) => api_error(
                 ApiErrorCode::UnsupportedProtocolVersion,
                 "protocol version is not supported",
             ),
@@ -624,7 +660,9 @@ mod tests {
 
     use super::{
         ApiMethod, ApiOutcome, ApiRequest, ApiResponse, ApiResult, ApiService, LocalApiError,
-        LocalServer, PROTOCOL_VERSION, ServerConfig, read_frame, send_request, write_frame,
+        LocalServer, MAX_SUPPORTED_PROTOCOL_VERSION, MIN_SUPPORTED_PROTOCOL_VERSION,
+        PROTOCOL_VERSION, ProtocolVersionRange, ServerConfig, read_frame, send_request,
+        write_frame,
     };
 
     struct TestSocketDirectory {
@@ -679,32 +717,45 @@ mod tests {
     fn service_reports_health_without_task_access() {
         let supervisor = TaskSupervisor::new(InMemoryEventStore::default());
         let mut service = ApiService::new(supervisor);
-        let response = service.handle(ApiRequest::new(ApiMethod::Health));
+        let response = service.handle(ApiRequest::new(ApiMethod::Health {}));
         let json = serde_json::to_string(&response).expect("serialize response");
 
         assert_eq!(response.protocol_version, PROTOCOL_VERSION);
         assert!(json.contains("healthy"));
+        assert!(matches!(
+            response.outcome,
+            ApiOutcome::Ok {
+                result: ApiResult::Healthy {
+                    supported_protocol_versions: ProtocolVersionRange {
+                        minimum: MIN_SUPPORTED_PROTOCOL_VERSION,
+                        maximum: MAX_SUPPORTED_PROTOCOL_VERSION,
+                    }
+                }
+            }
+        ));
         assert!(!json.contains("goal"));
     }
 
     #[test]
-    fn service_rejects_protocol_version_three_after_failure_event_change() {
+    fn service_rejects_versions_outside_the_supported_window() {
         let supervisor = TaskSupervisor::new(InMemoryEventStore::default());
         let mut service = ApiService::new(supervisor);
-        let response = service.handle(ApiRequest {
-            protocol_version: 3,
-            request: ApiMethod::Health,
-        });
+        for protocol_version in [0, 3, 5, u16::MAX] {
+            let response = service.handle(ApiRequest {
+                protocol_version,
+                request: ApiMethod::Health {},
+            });
 
-        assert!(matches!(
-            response.outcome,
-            ApiOutcome::Error {
-                error: super::ApiError {
-                    code: super::ApiErrorCode::UnsupportedProtocolVersion,
-                    ..
+            assert!(matches!(
+                response.outcome,
+                ApiOutcome::Error {
+                    error: super::ApiError {
+                        code: super::ApiErrorCode::UnsupportedProtocolVersion,
+                        ..
+                    }
                 }
-            }
-        ));
+            ));
+        }
     }
 
     #[test]
@@ -810,6 +861,39 @@ mod tests {
     }
 
     #[test]
+    fn server_rejects_unknown_health_request_fields() {
+        let directory = TestSocketDirectory::new();
+        let socket_path = directory.socket_path();
+        let server = LocalServer::bind(&socket_path, ServerConfig::default()).expect("bind socket");
+
+        let handle = thread::spawn(move || {
+            let supervisor = TaskSupervisor::new(InMemoryEventStore::default());
+            let mut service = ApiService::new(supervisor);
+            server.serve_once(&mut service).expect("serve request");
+        });
+
+        let mut stream = UnixStream::connect(&socket_path).expect("connect socket");
+        let request = br#"{"protocol_version":4,"request":{"method":"health","unknown":true}}"#;
+        write_frame(&mut stream, request, 1024).expect("write request");
+        let response = read_frame(&mut stream, 1024)
+            .expect("read response")
+            .expect("response frame");
+        let response: ApiResponse = serde_json::from_slice(&response).expect("parse response");
+
+        assert!(matches!(
+            response.outcome,
+            ApiOutcome::Error {
+                error: super::ApiError {
+                    code: super::ApiErrorCode::InvalidRequest,
+                    ..
+                }
+            }
+        ));
+
+        handle.join().expect("server thread");
+    }
+
+    #[test]
     fn server_rejects_version_two_before_parsing_legacy_task_shape() {
         let directory = TestSocketDirectory::new();
         let socket_path = directory.socket_path();
@@ -879,7 +963,7 @@ mod tests {
 
         let response = send_request(
             &socket_path,
-            &ApiRequest::new(ApiMethod::Health),
+            &ApiRequest::new(ApiMethod::Health {}),
             ServerConfig::default(),
         )
         .expect("health response");
@@ -887,7 +971,12 @@ mod tests {
         assert!(matches!(
             response.outcome,
             ApiOutcome::Ok {
-                result: ApiResult::Healthy
+                result: ApiResult::Healthy {
+                    supported_protocol_versions: ProtocolVersionRange {
+                        minimum: 4,
+                        maximum: 4,
+                    }
+                }
             }
         ));
 

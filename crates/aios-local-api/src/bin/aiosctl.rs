@@ -122,7 +122,7 @@ impl Command {
 
     fn into_method(self) -> Result<ApiMethod, CliError> {
         Ok(match self {
-            Self::Health => ApiMethod::Health,
+            Self::Health => ApiMethod::Health {},
             Self::Submit(path) => ApiMethod::Submit {
                 task: Box::new(load_task(&path)?),
             },

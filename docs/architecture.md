@@ -69,6 +69,8 @@ The current implementation is synchronous and process-local. It limits the numbe
 
 `aiosctl` uses the same Protocol Version 4 types as the daemon for submission, inspection, event retrieval, and lifecycle transitions. Version 4 adds the audit-safe `task_failed` Event carrying a stable failure code. Version 3 replaced host-only network allowlists with exact TCP destinations and retained Version 2's removal of the unsafe Task-ID-only approval methods from Version 1.
 
+Version 4 is the first stable Local API schema contract. The daemon publishes its inclusive supported-version window through `health`; the current window is `4..=4`. Requests remain strict, while clients ignore additive fields on existing response objects. Incompatible request, tagged variant, error-code, limit, framing, or security-semantic changes require a new protocol version and the overlap policy in [API compatibility](api-compatibility.md).
+
 After binding the configured control socket but before accepting requests, `aiosd` reconstructs public Task snapshots from SQLite. Every previously non-terminal Task receives an atomic `RUNTIME_RESTARTED` failure Event and transition to `failed`; terminal Tasks remain unchanged, and repeated restarts do not append duplicate failure Events. Any recovery or audit write failure aborts startup and drops the exact socket it created. Goals, Capabilities, idempotency keys, model sessions, Tool operations, and approval authority are not reconstructed. A post-restart submission is always a new explicit Task, even if its idempotency key was used by a previous daemon process. Sharing one database across different socket paths is not supported or prevented yet.
 
 ### Policy & Capability Engine
@@ -201,3 +203,5 @@ Technology choices that affect public contracts are documented as [Architecture 
 ## Compatibility
 
 The first target is Linux. Existing applications integrate through processes, standard streams, files, local sockets, and containers rather than a proprietary application format. macOS and Windows ports may follow after the core API stabilizes.
+
+Protocol Version 4 is stable as a JSON schema contract, independently from Rust source compatibility and SQLite schema evolution. See [Local API Compatibility Contract](api-compatibility.md) and [ADR-0005](adr/0005-stable-local-api.md).
