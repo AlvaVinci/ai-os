@@ -520,6 +520,7 @@ fn bubblewrap_arguments(
 ) -> Vec<std::ffi::OsString> {
     [
         std::ffi::OsString::from("--unshare-all"),
+        std::ffi::OsString::from("--unshare-user"),
         std::ffi::OsString::from("--disable-userns"),
         std::ffi::OsString::from("--die-with-parent"),
         std::ffi::OsString::from("--new-session"),
@@ -656,6 +657,7 @@ mod tests {
             arguments,
             [
                 "--unshare-all",
+                "--unshare-user",
                 "--disable-userns",
                 "--die-with-parent",
                 "--new-session",

@@ -2,7 +2,7 @@
 
 use std::env;
 use std::fs::{self, OpenOptions};
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::net::TcpListener;
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::PermissionsExt;
@@ -14,6 +14,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use aios_adapter_process::{BubblewrapProcessToolBuilder, ProcessAdapterError, ProcessToolBuilder};
 
 const TEST_TIMEOUT: Duration = Duration::from_secs(5);
+const MAX_HTTP_REQUEST_BYTES: usize = 8 * 1_024;
 
 struct SandboxFixture {
     base: PathBuf,
@@ -186,6 +187,28 @@ fn verify_busybox_wget_can_reach_host(fixture: &SandboxFixture) {
         loop {
             match listener.accept() {
                 Ok((mut stream, _address)) => {
+                    stream
+                        .set_read_timeout(Some(TEST_TIMEOUT))
+                        .expect("bound direct HTTP request timeout");
+                    let mut request = [0_u8; MAX_HTTP_REQUEST_BYTES];
+                    let mut request_bytes = 0_usize;
+                    while request_bytes < request.len()
+                        && !request[..request_bytes]
+                            .windows(4)
+                            .any(|window| window == b"\r\n\r\n")
+                    {
+                        let read = stream
+                            .read(&mut request[request_bytes..])
+                            .expect("read direct HTTP request");
+                        assert!(read > 0, "direct HTTP request ended before headers");
+                        request_bytes += read;
+                    }
+                    assert!(
+                        request[..request_bytes]
+                            .windows(4)
+                            .any(|window| window == b"\r\n\r\n"),
+                        "direct HTTP request headers exceeded the limit"
+                    );
                     stream
                         .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")
                         .expect("write direct HTTP response");

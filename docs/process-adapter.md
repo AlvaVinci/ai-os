@@ -52,7 +52,7 @@ The handler timeout is fixed trusted configuration. It does not yet derive from 
 
 The isolated launch plan always:
 
-- creates user, mount, PID, IPC, network, UTS, and cgroup namespaces through `--unshare-all`;
+- requires a user namespace through `--unshare-user`, then creates the remaining mount, PID, IPC, network, UTS, and cgroup namespaces through `--unshare-all`;
 - disables further user namespace creation and drops all capabilities;
 - mounts the prepared root read-only at `/`;
 - mounts only the declared scratch directory read-write at `/workspace`;
