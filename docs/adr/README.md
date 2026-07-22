@@ -14,5 +14,6 @@ Index:
 - [ADR-0001: Separate approval authority from untrusted execution principals](0001-separate-approval-principal.md)
 - [ADR-0002: Prohibit shell interpretation in Tool execution](0002-no-shell-tool-execution.md)
 - [ADR-0003: Authorize explicit TCP network destinations](0003-explicit-network-destinations.md)
+- [ADR-0004: Fail interrupted Tasks instead of restoring execution authority](0004-non-resumable-restart.md)
 
 New ADRs should state context, decision, consequences, alternatives, and related security requirements. Existing ADRs are immutable except for status and supersession links; changed decisions receive a new record.

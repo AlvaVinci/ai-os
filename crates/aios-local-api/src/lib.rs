@@ -23,7 +23,7 @@ use serde::{Deserialize, Serialize};
 pub const DEFAULT_MAX_FRAME_BYTES: usize = 64 * 1024;
 pub const DEFAULT_EVENT_PAGE_SIZE: u16 = 100;
 pub const MAX_EVENT_PAGE_SIZE: u16 = 256;
-pub const PROTOCOL_VERSION: u16 = 3;
+pub const PROTOCOL_VERSION: u16 = 4;
 const MIN_MAX_FRAME_BYTES: usize = 1024;
 const MAX_MAX_FRAME_BYTES: usize = 1024 * 1024;
 
@@ -688,11 +688,11 @@ mod tests {
     }
 
     #[test]
-    fn service_rejects_protocol_version_two_after_network_contract_change() {
+    fn service_rejects_protocol_version_three_after_failure_event_change() {
         let supervisor = TaskSupervisor::new(InMemoryEventStore::default());
         let mut service = ApiService::new(supervisor);
         let response = service.handle(ApiRequest {
-            protocol_version: 2,
+            protocol_version: 3,
             request: ApiMethod::Health,
         });
 
@@ -797,13 +797,13 @@ mod tests {
         });
 
         let mut stream = UnixStream::connect(&socket_path).expect("connect socket");
-        let request = br#"{"protocol_version":3,"request":{"method":"health"}}"#;
+        let request = br#"{"protocol_version":4,"request":{"method":"health"}}"#;
         write_frame(&mut stream, request, 1024).expect("write request");
         let response = read_frame(&mut stream, 1024)
             .expect("read response")
             .expect("response frame");
         let json = String::from_utf8(response).expect("UTF-8 response");
-        assert!(json.contains("\"protocol_version\":3"));
+        assert!(json.contains("\"protocol_version\":4"));
         assert!(json.contains("healthy"));
 
         handle.join().expect("server thread");

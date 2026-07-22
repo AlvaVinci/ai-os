@@ -14,6 +14,7 @@ pub enum ErrorCode {
     CapabilityDenied,
     ApprovalExpired,
     BudgetExceeded,
+    RuntimeRestarted,
     RuntimeUnavailable,
     InternalError,
 }

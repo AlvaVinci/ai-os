@@ -4,13 +4,14 @@ use std::fmt::{self, Display, Formatter};
 use std::time::Duration;
 
 use aios_core::{
-    CapabilityPolicy, CapabilityRequest, DenialReason, FileAccess, NetworkTransport,
+    CapabilityPolicy, CapabilityRequest, DenialReason, ErrorCode, FileAccess, NetworkTransport,
     PolicyDecision, StateTransitionError, TaskSpec, TaskState, ValidationErrors,
 };
 
 use crate::{
     ApprovalAuthority, ApprovalError, ApprovalGrant, ApprovalId, ApprovalReceipt, ApprovalRequest,
-    EventStore, EventStoreError, InMemoryEventStore, OperationId, TaskEvent, TaskEventKind, TaskId,
+    EventStore, EventStoreError, InMemoryEventStore, OperationId, RecoverableEventStore, TaskEvent,
+    TaskEventKind, TaskId,
 };
 
 const DEFAULT_MAX_TASKS: usize = 10_000;
@@ -214,6 +215,7 @@ impl From<ApprovalError> for SupervisorError {
 /// Coordinates validated tasks and records every accepted state change.
 pub struct TaskSupervisor<S = InMemoryEventStore> {
     tasks: BTreeMap<TaskId, TaskRecord>,
+    recovered_tasks: BTreeMap<TaskId, TaskState>,
     idempotency_index: BTreeMap<String, TaskId>,
     event_store: S,
     approval_authority: ApprovalAuthority,
@@ -228,11 +230,67 @@ impl Default for TaskSupervisor<InMemoryEventStore> {
     }
 }
 
+impl<S: RecoverableEventStore> TaskSupervisor<S> {
+    /// Recovers public Task state and fails every previously non-terminal Task.
+    ///
+    /// Task input, idempotency keys, model sessions, Tool operations, and
+    /// approval authority are intentionally not reconstructed. Recovery must
+    /// finish before the caller exposes the supervisor to new requests.
+    pub fn recover(event_store: S, max_tasks: usize) -> Result<Self, SupervisorError> {
+        if max_tasks == 0 {
+            return Err(SupervisorError::CapacityExceeded);
+        }
+
+        let snapshots = event_store.recover_task_snapshots()?;
+        if snapshots.len() > max_tasks {
+            return Err(SupervisorError::CapacityExceeded);
+        }
+
+        let mut recovered_tasks = BTreeMap::new();
+        for snapshot in snapshots {
+            if recovered_tasks
+                .insert(snapshot.task_id, snapshot.state)
+                .is_some()
+            {
+                return Err(EventStoreError::Corrupt.into());
+            }
+        }
+
+        let mut supervisor = Self::with_max_tasks(event_store, max_tasks)?;
+        supervisor.recovered_tasks = recovered_tasks;
+        let interrupted: Vec<(TaskId, TaskState)> = supervisor
+            .recovered_tasks
+            .iter()
+            .filter_map(|(task_id, state)| (!state.is_terminal()).then_some((*task_id, *state)))
+            .collect();
+
+        for (task_id, state) in interrupted {
+            let failed = TaskState::Failed;
+            supervisor.event_store.append_batch(
+                task_id,
+                &[
+                    TaskEventKind::TaskFailed {
+                        code: ErrorCode::RuntimeRestarted,
+                    },
+                    TaskEventKind::StateTransitioned {
+                        from: state,
+                        to: failed,
+                    },
+                ],
+            )?;
+            supervisor.recovered_tasks.insert(task_id, failed);
+        }
+
+        Ok(supervisor)
+    }
+}
+
 impl<S: EventStore> TaskSupervisor<S> {
     #[must_use]
     pub fn new(event_store: S) -> Self {
         Self {
             tasks: BTreeMap::new(),
+            recovered_tasks: BTreeMap::new(),
             idempotency_index: BTreeMap::new(),
             event_store,
             approval_authority: ApprovalAuthority::default(),
@@ -249,6 +307,7 @@ impl<S: EventStore> TaskSupervisor<S> {
 
         Ok(Self {
             tasks: BTreeMap::new(),
+            recovered_tasks: BTreeMap::new(),
             idempotency_index: BTreeMap::new(),
             event_store,
             approval_authority: ApprovalAuthority::default(),
@@ -273,7 +332,7 @@ impl<S: EventStore> TaskSupervisor<S> {
                 state: existing.state,
             }));
         }
-        if self.tasks.len() >= self.max_tasks {
+        if self.tasks.len().saturating_add(self.recovered_tasks.len()) >= self.max_tasks {
             return Err(SupervisorError::CapacityExceeded);
         }
 
@@ -327,10 +386,8 @@ impl<S: EventStore> TaskSupervisor<S> {
 
     #[must_use]
     pub fn get(&self, task_id: TaskId) -> Option<TaskSnapshot> {
-        self.tasks.get(&task_id).map(|record| TaskSnapshot {
-            task_id,
-            state: record.state,
-        })
+        self.task_state(task_id)
+            .map(|state| TaskSnapshot { task_id, state })
     }
 
     pub fn start(&mut self, task_id: TaskId) -> Result<(), SupervisorError> {
@@ -650,10 +707,8 @@ impl<S: EventStore> TaskSupervisor<S> {
     /// Cancels a non-terminal task and records one event. Repeated cancellation is a no-op.
     pub fn cancel(&mut self, task_id: TaskId) -> Result<bool, SupervisorError> {
         let current = self
-            .tasks
-            .get(&task_id)
-            .ok_or(SupervisorError::TaskNotFound)?
-            .state;
+            .task_state(task_id)
+            .ok_or(SupervisorError::TaskNotFound)?;
         if current.is_terminal() {
             return Ok(false);
         }
@@ -667,7 +722,7 @@ impl<S: EventStore> TaskSupervisor<S> {
         task_id: TaskId,
         after_sequence: u64,
     ) -> Result<Vec<TaskEvent>, SupervisorError> {
-        if !self.tasks.contains_key(&task_id) {
+        if self.task_state(task_id).is_none() {
             return Err(SupervisorError::TaskNotFound);
         }
         Ok(self.event_store.list(task_id, after_sequence)?)
@@ -675,10 +730,8 @@ impl<S: EventStore> TaskSupervisor<S> {
 
     fn transition(&mut self, task_id: TaskId, next: TaskState) -> Result<(), SupervisorError> {
         let current = self
-            .tasks
-            .get(&task_id)
-            .ok_or(SupervisorError::TaskNotFound)?
-            .state;
+            .task_state(task_id)
+            .ok_or(SupervisorError::TaskNotFound)?;
         let mut proposed = current;
         proposed.transition_to(next)?;
 
@@ -705,12 +758,21 @@ impl<S: EventStore> TaskSupervisor<S> {
             self.invalidate_approvals(task_id);
         }
 
-        let record = self
-            .tasks
-            .get_mut(&task_id)
-            .ok_or(SupervisorError::TaskNotFound)?;
-        record.state = next;
+        if let Some(record) = self.tasks.get_mut(&task_id) {
+            record.state = next;
+        } else if let Some(state) = self.recovered_tasks.get_mut(&task_id) {
+            *state = next;
+        } else {
+            return Err(SupervisorError::TaskNotFound);
+        }
         Ok(())
+    }
+
+    fn task_state(&self, task_id: TaskId) -> Option<TaskState> {
+        self.tasks
+            .get(&task_id)
+            .map(|record| record.state)
+            .or_else(|| self.recovered_tasks.get(&task_id).copied())
     }
 
     fn revocation_events(&self, task_id: TaskId) -> Vec<TaskEventKind> {

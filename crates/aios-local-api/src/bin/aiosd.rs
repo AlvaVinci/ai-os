@@ -10,10 +10,10 @@ const DEFAULT_MAX_TASKS: usize = 10_000;
 
 fn main() -> Result<(), Box<dyn Error>> {
     let options = Options::parse(std::env::args().skip(1))?;
-    let store = SqliteEventStore::open(&options.database, DEFAULT_MAX_EVENTS_PER_TASK)?;
-    let supervisor = TaskSupervisor::with_max_tasks(store, DEFAULT_MAX_TASKS)?;
-    let mut service = ApiService::new(supervisor);
     let server = LocalServer::bind(&options.socket, ServerConfig::default())?;
+    let store = SqliteEventStore::open(&options.database, DEFAULT_MAX_EVENTS_PER_TASK)?;
+    let supervisor = TaskSupervisor::recover(store, DEFAULT_MAX_TASKS)?;
+    let mut service = ApiService::new(supervisor);
 
     eprintln!("aiosd listening on {:?}", options.socket);
     server.serve_forever(&mut service)?;
