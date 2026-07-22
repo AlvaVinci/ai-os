@@ -22,6 +22,7 @@ Translations may be added under language-specific directories when there is enou
 - Avoid unrelated refactoring and unnecessary dependencies.
 - Include tests or reproducible verification for behavior changes.
 - Describe security, compatibility, operational, and rollback impact.
+- Follow the [Local API Compatibility Contract](docs/api-compatibility.md) for every wire-schema or protocol-semantic change.
 
 ## Development workflow
 

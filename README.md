@@ -98,6 +98,7 @@ Implemented:
 - `aiosd` with a bounded, owner-only Unix-socket API
 - one-request-per-connection framing, timeouts, and event pagination
 - Protocol Version 4 with explicit incompatible-version rejection
+- stable Version 4 Local API schema contract, published support window, and golden fixtures
 - `aiosctl` for task submission, inspection, events, and lifecycle transitions
 - deterministic filesystem, network, and tool capability policy decisions
 - fail-closed authorization with resource-free denial and approval results
@@ -154,7 +155,7 @@ cargo run -p aios-local-api --bin aiosctl -- \
   --socket "$runtime_dir/aiosd.sock" submit examples/task.json
 ```
 
-The local API uses Protocol Version 4, but remains experimental and has no stable compatibility guarantee yet. See [Local API](docs/local-api.md) for the protocol and security boundaries.
+The local API uses Protocol Version 4, the first stable schema contract. The daemon remains pre-release and is not yet an operating-system security boundary. See [Local API](docs/local-api.md) and [API compatibility](docs/api-compatibility.md).
 
 ## Contributing
 

@@ -34,7 +34,7 @@ Run Tasks safely on one Linux device.
 - [x] Experimental `aiosctl` client and versioned local API requests.
 - [x] Deterministic filesystem, network, and tool capability policy evaluation.
 - [x] Bounded pending approvals and linear one-time approval grants.
-- [ ] Stable local API compatibility contract.
+- [x] Stable local API compatibility contract.
 - [x] Deterministic non-resumable restart handling for active Tasks; encrypted resumable execution is deferred beyond v0.1.
 - [x] Approval audit events, cancellation invalidation, and timeout enforcement.
 - [x] Approval-aware in-process execution gate with complete-operation retention.

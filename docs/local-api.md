@@ -2,9 +2,11 @@
 
 ## Status
 
-Experimental Protocol Version 4. The version number is explicit, but the framing and schema may still change before the first stable release.
+Protocol Version 4 is the first stable Local API schema contract. The daemon remains pre-release and is not yet an operating-system security boundary.
 
 Version 4 adds the audit-safe `task_failed` Event with a stable failure code, including `RUNTIME_RESTARTED`. Version 3 replaced Version 2 host-only network allowlists with exact TCP destinations containing a host and non-zero port. Version 3 retained Version 2's removal of the Version 1 `wait_for_approval` and `approve` methods. Those methods changed Task state using only a Task ID and were not bound to a policy-evaluated operation. Approval remains available through the trusted runtime API until a resource-safe local API schema is defined.
+
+The current supported-version window is `4..=4`. The health response publishes this range. Incompatible changes require a new protocol version and future versions must overlap with their stable predecessor as defined by the [Local API Compatibility Contract](api-compatibility.md).
 
 ## Transport
 
@@ -42,6 +44,20 @@ The server reads the bounded envelope version before deserializing the method or
 
 ```json
 {"protocol_version":4,"request":{"method":"health"}}
+```
+
+```json
+{
+  "protocol_version": 4,
+  "status": "ok",
+  "result": {
+    "type": "healthy",
+    "supported_protocol_versions": {
+      "minimum": 4,
+      "maximum": 4
+    }
+  }
+}
 ```
 
 ### Submit
@@ -150,7 +166,7 @@ Successful API responses exit with code `0`, API errors and invalid CLI input wi
 
 ## Current limitations
 
-- Protocol Version 4 is experimental and does not yet carry a long-term compatibility guarantee.
+- Protocol Version 4 has a stable schema contract; operational readiness remains blocked by the v0.1 Definition of Done.
 - Policy-bound approval requests are not exposed through the local API yet.
 - Task input and process-local idempotency state are not restored after daemon restart; resumable execution remains out of scope for v0.1.
 - Malformed clients are isolated, but one local user can still consume time by repeatedly opening connections.

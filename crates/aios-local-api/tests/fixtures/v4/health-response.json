@@ -1,0 +1,11 @@
+{
+  "protocol_version": 4,
+  "status": "ok",
+  "result": {
+    "type": "healthy",
+    "supported_protocol_versions": {
+      "minimum": 4,
+      "maximum": 4
+    }
+  }
+}
