@@ -136,8 +136,9 @@ The current adapter executes trusted in-process handlers only. Handler-specific 
 - Clears ambient environment variables and nulls standard input, output, and error.
 - Uses an explicit canonical working directory and never invokes a shell or searches `PATH`.
 - Applies a bounded timeout to the direct child and returns redacted failure categories.
+- Optionally launches through an explicit Linux Bubblewrap backend with a prepared read-only root filesystem, one writable scratch mount, namespace isolation, no host network, dropped capabilities, and no preserved extra descriptors.
 
-The current Process Adapter is a constrained `ToolHandler`, not a sandbox. It does not separate OS principals, close every inherited non-standard descriptor, restrict filesystem or network access, apply namespaces or cgroups, or guarantee termination of descendants. Process output is deliberately discarded until bounded streaming and descendant cleanup can be enforced together. See [Process adapter](process-adapter.md).
+Direct mode remains a constrained `ToolHandler`, not a sandbox. Bubblewrap mode is an experimental deny-network isolation foundation, but its mounts are not yet derived from Task Capabilities and it does not apply cgroup budgets, seccomp, descriptor-bound filesystem access, or Linux-tested asynchronous cancellation. Process output is deliberately discarded until bounded streaming and descendant cleanup can be enforced together. See [Process adapter](process-adapter.md) and [ADR-0006](adr/0006-bubblewrap-process-isolation.md).
 
 ### Model Router
 

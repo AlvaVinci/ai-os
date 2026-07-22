@@ -2,7 +2,12 @@
 
 ## Status
 
-Experimental bounded child-process Tool handler. It reduces ambient process behavior but is not an operating-system sandbox or complete Capability enforcement.
+Experimental child-process Tool handlers with two explicit execution modes:
+
+- `ProcessToolBuilder` starts a bounded direct child for trusted executables;
+- `BubblewrapProcessToolBuilder` starts a deny-network Linux sandbox with a prepared read-only root filesystem and one writable scratch directory.
+
+The Bubblewrap path is an isolation foundation, not complete operating-system Capability enforcement.
 
 ## Trust model
 
@@ -19,6 +24,15 @@ The builder canonicalizes the executable and working directory. On Unix, it reco
 
 The handler is intended to be consumed by `ToolAdapterBuilder`. The resulting `ToolExecutionGate` applies Task Capability and approval checks before invoking it. Direct possession of a handler is trusted in-process authority and must not be exposed to a model or runner.
 
+The Linux isolated builder additionally requires:
+
+- an absolute Bubblewrap executable path;
+- a prepared root filesystem that is not the host root;
+- an absolute executable path inside that root filesystem;
+- a separate scratch directory mounted at `/workspace`.
+
+The prepared root must contain directory mount points for `/proc`, `/dev`, `/tmp`, and `/workspace`. The root and scratch trees must not overlap. Trusted startup code is responsible for creating a minimal, versioned root filesystem and an empty Task-scoped scratch directory. Neither tree may contain daemon or approval sockets, event databases, host credentials, or unrelated user data.
+
 ## Execution behavior
 
 1. The Tool Catalog maps a model-visible route to fixed Capability Tool and action identifiers.
@@ -26,13 +40,27 @@ The handler is intended to be consumed by `ToolAdapterBuilder`. The resulting `T
 3. The Process Adapter revalidates total argument bounds.
 4. The trusted argument policy evaluates the dynamic argument vector.
 5. The adapter verifies the configured executable identity.
-6. The adapter starts the executable directly with fixed and dynamic argument arrays.
-7. The child receives a canonical working directory, an otherwise empty environment, and null standard streams.
-8. The adapter waits for successful exit or kills and reaps the direct child after the configured timeout.
+6. The direct mode starts the executable with fixed and dynamic argument arrays. The isolated mode starts the fixed Bubblewrap executable with a deterministic sandbox plan, followed by the exact executable and argument array.
+7. The child receives an otherwise empty environment and null standard streams.
+8. The adapter waits for successful exit or kills and reaps its direct child after the configured timeout.
 
 No step invokes a shell, interprets argument text, or searches `PATH` for the executable. Dynamic arguments such as shell metacharacters remain literal strings.
 
 The handler timeout is fixed trusted configuration. It does not yet derive from or enforce the Task wall-time budget.
+
+## Linux Bubblewrap boundary
+
+The isolated launch plan always:
+
+- creates user, mount, PID, IPC, network, UTS, and cgroup namespaces through `--unshare-all`;
+- disables further user namespace creation and drops all capabilities;
+- mounts the prepared root read-only at `/`;
+- mounts only the declared scratch directory read-write at `/workspace`;
+- creates private `/proc`, `/dev`, and in-memory `/tmp` mounts;
+- creates a new terminal session and requests child termination when the launcher or its parent dies;
+- preserves no additional file descriptors and never adds `--share-net`.
+
+Namespace or mount setup failure is an execution failure. The adapter never falls back to direct execution. The builder returns `UnsupportedPlatform` outside Linux.
 
 ## Bounds
 
@@ -59,7 +87,7 @@ Output capture is deliberately deferred. A bounded pipe alone is insufficient be
 
 ## Residual risks and prohibited claims
 
-The current adapter does not:
+The direct mode does not:
 
 - run under a separate OS principal;
 - guarantee that non-standard inherited descriptors are closed;
@@ -70,8 +98,19 @@ The current adapter does not:
 - bind execution to an already-open executable descriptor;
 - provide resumable or asynchronous cancellation.
 
-Executables registered with this adapter remain trusted. Argument policies must allow only the exact semantic operations intended for the Tool route. The adapter must not be described as isolated, sandboxed, or safe for untrusted executables until the corresponding [Threat Model](threat-model.md) release gates are implemented.
+The Bubblewrap mode narrows filesystem visibility, denies host network access, closes unpreserved descriptors in the launcher, and supplies namespace process containment. It still does not:
+
+- derive root or scratch mounts from the current Task's Filesystem Capability;
+- provide approved destination-scoped network access;
+- enforce CPU or memory budgets through cgroups;
+- install a seccomp policy or descriptor-bound file access;
+- verify an immutable root filesystem image;
+- eliminate host-side executable and mount time-of-check/time-of-use races;
+- prove complete descendant cleanup with adversarial Linux integration tests;
+- expose a principal-separated approval API.
+
+Executables registered in direct mode remain trusted. Argument policies in both modes must allow only the exact semantic operations intended for the Tool route. Bubblewrap mode may be described as experimental deny-network process isolation, but not as complete Capability enforcement or a release-ready sandbox until the corresponding [Threat Model](threat-model.md) gates have Linux evidence.
 
 ## Next enforcement milestone
 
-The Linux isolation adapter should combine principal separation, a descriptor allowlist, namespace or equivalent isolation, cgroup resource limits, descendant cleanup, and descriptor-bound filesystem access. That work must preserve the fixed executable and structured argument rules from [ADR-0002](adr/0002-no-shell-tool-execution.md).
+Next, integrate this backend with Task-derived scratch creation and a minimal immutable root image, then add Linux escape tests for filesystem visibility, file descriptor inheritance, network denial, descendant cleanup, and control-socket reachability. After that, cgroup budgets, seccomp, and destination-scoped network brokering can extend the same boundary. See [ADR-0006](adr/0006-bubblewrap-process-isolation.md).
