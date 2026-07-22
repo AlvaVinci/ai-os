@@ -1,0 +1,10 @@
+# Ubuntu 24.04 restricts capabilities inside unprivileged user namespaces by default.
+# This path-scoped profile lets Bubblewrap construct the namespace boundary while
+# leaving the system-wide restriction enabled for every other executable.
+
+abi <abi/4.0>,
+include <tunables/global>
+
+profile bwrap /usr/bin/bwrap flags=(unconfined) {
+  userns,
+}

@@ -29,6 +29,19 @@ jobs:
           /usr/bin/bwrap --version
           /usr/bin/bwrap --help 2>&1 | grep --fixed-strings -- '--disable-userns'
 
+      - name: Allow Bubblewrap user namespace setup
+        run: sudo /usr/sbin/apparmor_parser --replace .github/apparmor/bwrap
+
+      - name: Verify Bubblewrap namespace setup
+        run: |
+          /usr/bin/bwrap \
+            --unshare-user \
+            --disable-userns \
+            --unshare-net \
+            --ro-bind / / \
+            -- \
+            /usr/bin/true
+
       - name: Install pinned Rust toolchain
         run: rustup toolchain install 1.97.1 --profile minimal --component clippy,rustfmt
 
