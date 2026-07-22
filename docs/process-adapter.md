@@ -72,7 +72,7 @@ The `linux_bubblewrap` integration suite starts the real Bubblewrap executable w
 - a non-standard host file descriptor is closed before Tool execution;
 - a host TCP listener reachable by the same BusyBox executable in direct mode is unreachable from the sandbox network namespace.
 
-These tests are ignored by the default test command because they require Linux, Bubblewrap, static BusyBox, and enabled unprivileged user namespaces. The pinned Ubuntu workflow runs them explicitly:
+These tests are ignored by the default test command because they require Linux, Bubblewrap 0.8.0 or newer with `--disable-userns`, static BusyBox, and enabled unprivileged user namespaces. The pinned Ubuntu 24.04 workflow verifies the required Bubblewrap option before running them explicitly:
 
 ```bash
 AIOS_BWRAP_PATH=/usr/bin/bwrap \

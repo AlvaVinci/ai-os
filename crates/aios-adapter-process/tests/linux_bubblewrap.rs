@@ -168,7 +168,7 @@ fn linux_sandbox_blocks_host_network() {
         .expect("make host listener nonblocking");
     let address = listener.local_addr().expect("read host listener address");
     let result = fixture.run_sandbox(
-        &["wget", "-q", "-T", "1", "-O", "/workspace/network-output"],
+        &["wget", "-q", "-O", "/workspace/network-output"],
         vec![format!("http://{address}/")],
     );
 
@@ -232,8 +232,6 @@ fn verify_busybox_wget_can_reach_host(fixture: &SandboxFixture) {
     .fixed_arguments(vec![
         "wget".to_owned(),
         "-q".to_owned(),
-        "-T".to_owned(),
-        "2".to_owned(),
         "-O".to_owned(),
         path_string(&output),
     ])

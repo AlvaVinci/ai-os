@@ -15,7 +15,7 @@ concurrency:
 
 jobs:
   bubblewrap-isolation:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
 
     steps:
@@ -27,6 +27,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install --yes --no-install-recommends bubblewrap busybox-static
           /usr/bin/bwrap --version
+          /usr/bin/bwrap --help 2>&1 | grep --fixed-strings -- '--disable-userns'
 
       - name: Install pinned Rust toolchain
         run: rustup toolchain install 1.97.1 --profile minimal --component clippy,rustfmt
