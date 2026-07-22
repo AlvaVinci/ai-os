@@ -49,7 +49,7 @@ This decision is an isolation foundation, not completion of DOD-002, DOD-003, or
 - Sandbox executable paths must be absolute, bounded, and traversal-free.
 - Non-Linux builds reject the isolated builder with a stable unsupported-platform error.
 
-Linux integration tests must later execute escape probes for filesystem visibility, inherited descriptors, network access, descendant cleanup, and control-socket reachability. Unit command-plan tests are not release evidence.
+Linux integration tests execute probes for filesystem visibility, inherited descriptors, network access, descendant cleanup after initial-process exit and timeout, and control-socket reachability. Additional filesystem race and Task-derived mount evidence remains required. Unit command-plan tests are not release evidence.
 
 ## Alternatives considered
 

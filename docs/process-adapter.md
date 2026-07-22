@@ -70,6 +70,7 @@ The `linux_bubblewrap` integration suite starts the real Bubblewrap executable w
 - writes through the read-only root filesystem fail;
 - a host-only approval socket path is absent inside the sandbox;
 - a non-standard host file descriptor is closed before Tool execution;
+- a synchronized background descendant cannot survive initial-process exit or Adapter timeout;
 - a host TCP listener reachable by the same BusyBox executable in direct mode is unreachable from the sandbox network namespace.
 
 These tests are ignored by the default test command because they require Linux, Bubblewrap 0.8.0 or newer with `--disable-userns`, static BusyBox, and enabled unprivileged user namespaces. The pinned Ubuntu 24.04 workflow verifies the required Bubblewrap option and loads a path-scoped AppArmor profile for `/usr/bin/bwrap`; it does not disable the system-wide unprivileged user namespace restriction. The workflow then runs the tests explicitly:
@@ -126,11 +127,11 @@ The Bubblewrap mode narrows filesystem visibility, denies host network access, c
 - install a seccomp policy or descriptor-bound file access;
 - verify an immutable root filesystem image;
 - eliminate host-side executable and mount time-of-check/time-of-use races;
-- prove complete descendant cleanup with adversarial Linux integration tests;
+- prove descendant cleanup for future asynchronous cancellation and additional adversarial variants;
 - expose a principal-separated approval API.
 
 Executables registered in direct mode remain trusted. Argument policies in both modes must allow only the exact semantic operations intended for the Tool route. Bubblewrap mode may be described as experimental deny-network process isolation, but not as complete Capability enforcement or a release-ready sandbox until the corresponding [Threat Model](threat-model.md) gates have Linux evidence.
 
 ## Next enforcement milestone
 
-Next, extend the Linux suite with adversarial descendant cleanup, then integrate this backend with Task-derived scratch creation and a minimal immutable root image. After that, cgroup budgets, seccomp, and destination-scoped network brokering can extend the same boundary. See [ADR-0006](adr/0006-bubblewrap-process-isolation.md).
+With background descendant cleanup covered, next integrate this backend with Task-derived scratch creation and a minimal immutable root image. After that, cgroup budgets, seccomp, and destination-scoped network brokering can extend the same boundary. See [ADR-0006](adr/0006-bubblewrap-process-isolation.md).
