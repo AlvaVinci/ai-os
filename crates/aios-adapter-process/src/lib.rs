@@ -520,6 +520,7 @@ fn bubblewrap_arguments(
 ) -> Vec<std::ffi::OsString> {
     [
         std::ffi::OsString::from("--unshare-all"),
+        std::ffi::OsString::from("--unshare-user"),
         std::ffi::OsString::from("--disable-userns"),
         std::ffi::OsString::from("--die-with-parent"),
         std::ffi::OsString::from("--new-session"),
@@ -617,11 +618,12 @@ mod tests {
     use aios_core::{ApprovalPolicy, Budget, CapabilitySet, NetworkPolicy, TaskSpec};
     use aios_runtime::{ExecutionOutcome, SubmitResult, TaskSupervisor};
 
+    #[cfg(not(target_os = "linux"))]
+    use super::BubblewrapProcessToolBuilder;
     use super::{
-        BubblewrapProcessToolBuilder, MAX_ARGUMENT_BYTES, MAX_ARGUMENTS, ProcessAdapterError,
-        ProcessToolBuilder, bubblewrap_arguments, canonical_sandbox_executable,
-        canonical_sandbox_root, canonical_scratch_directory, validate_sandbox_absolute_path,
-        validate_sandbox_mount_points,
+        MAX_ARGUMENT_BYTES, MAX_ARGUMENTS, ProcessAdapterError, ProcessToolBuilder,
+        bubblewrap_arguments, canonical_sandbox_executable, canonical_sandbox_root,
+        canonical_scratch_directory, validate_sandbox_absolute_path, validate_sandbox_mount_points,
     };
 
     fn executable(candidates: &[&str]) -> PathBuf {
@@ -655,6 +657,7 @@ mod tests {
             arguments,
             [
                 "--unshare-all",
+                "--unshare-user",
                 "--disable-userns",
                 "--die-with-parent",
                 "--new-session",

@@ -52,7 +52,7 @@ The handler timeout is fixed trusted configuration. It does not yet derive from 
 
 The isolated launch plan always:
 
-- creates user, mount, PID, IPC, network, UTS, and cgroup namespaces through `--unshare-all`;
+- requires a user namespace through `--unshare-user`, then creates the remaining mount, PID, IPC, network, UTS, and cgroup namespaces through `--unshare-all`;
 - disables further user namespace creation and drops all capabilities;
 - mounts the prepared root read-only at `/`;
 - mounts only the declared scratch directory read-write at `/workspace`;
@@ -61,6 +61,26 @@ The isolated launch plan always:
 - preserves no additional file descriptors and never adds `--share-net`.
 
 Namespace or mount setup failure is an execution failure. The adapter never falls back to direct execution. The builder returns `UnsupportedPlatform` outside Linux.
+
+## Linux boundary verification
+
+The `linux_bubblewrap` integration suite starts the real Bubblewrap executable with a static BusyBox probe. It verifies that:
+
+- `/workspace` writes reach only the declared scratch directory;
+- writes through the read-only root filesystem fail;
+- a host-only approval socket path is absent inside the sandbox;
+- a non-standard host file descriptor is closed before Tool execution;
+- a host TCP listener reachable by the same BusyBox executable in direct mode is unreachable from the sandbox network namespace.
+
+These tests are ignored by the default test command because they require Linux, Bubblewrap 0.8.0 or newer with `--disable-userns`, static BusyBox, and enabled unprivileged user namespaces. The pinned Ubuntu 24.04 workflow verifies the required Bubblewrap option and loads a path-scoped AppArmor profile for `/usr/bin/bwrap`; it does not disable the system-wide unprivileged user namespace restriction. The workflow then runs the tests explicitly:
+
+```bash
+AIOS_BWRAP_PATH=/usr/bin/bwrap \
+AIOS_BUSYBOX_PATH=/usr/bin/busybox \
+cargo test -p aios-adapter-process --test linux_bubblewrap --locked -- --ignored
+```
+
+Passing this suite is evidence for the current deny-network launch boundary only. It does not verify Task-derived mounts, cgroup budgets, seccomp, destination-scoped networking, or the future approval API.
 
 ## Bounds
 
@@ -113,4 +133,4 @@ Executables registered in direct mode remain trusted. Argument policies in both 
 
 ## Next enforcement milestone
 
-Next, integrate this backend with Task-derived scratch creation and a minimal immutable root image, then add Linux escape tests for filesystem visibility, file descriptor inheritance, network denial, descendant cleanup, and control-socket reachability. After that, cgroup budgets, seccomp, and destination-scoped network brokering can extend the same boundary. See [ADR-0006](adr/0006-bubblewrap-process-isolation.md).
+Next, extend the Linux suite with adversarial descendant cleanup, then integrate this backend with Task-derived scratch creation and a minimal immutable root image. After that, cgroup budgets, seccomp, and destination-scoped network brokering can extend the same boundary. See [ADR-0006](adr/0006-bubblewrap-process-isolation.md).
