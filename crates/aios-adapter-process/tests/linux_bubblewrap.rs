@@ -15,6 +15,10 @@ use aios_adapter_process::{BubblewrapProcessToolBuilder, ProcessAdapterError, Pr
 
 const TEST_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_HTTP_REQUEST_BYTES: usize = 8 * 1_024;
+const DESCENDANT_TIMEOUT: Duration = Duration::from_secs(1);
+const DESCENDANT_OBSERVATION_DELAY: Duration = Duration::from_millis(2_500);
+const EXITING_PARENT_SCRIPT: &str = "(touch /workspace/exit-descendant-started; sleep 2; touch /workspace/exit-descendant-survived) & while [ ! -e /workspace/exit-descendant-started ]; do :; done";
+const TIMED_OUT_PARENT_SCRIPT: &str = "(touch /workspace/timeout-descendant-started; sleep 2; touch /workspace/timeout-descendant-survived) & while [ ! -e /workspace/timeout-descendant-started ]; do :; done; sleep 10";
 
 struct SandboxFixture {
     base: PathBuf,
@@ -74,6 +78,15 @@ impl SandboxFixture {
         fixed_arguments: &[&str],
         dynamic_arguments: Vec<String>,
     ) -> Result<(), ProcessAdapterError> {
+        self.run_sandbox_with_timeout(fixed_arguments, dynamic_arguments, TEST_TIMEOUT)
+    }
+
+    fn run_sandbox_with_timeout(
+        &self,
+        fixed_arguments: &[&str],
+        dynamic_arguments: Vec<String>,
+        timeout: Duration,
+    ) -> Result<(), ProcessAdapterError> {
         let mut handler = BubblewrapProcessToolBuilder::new(
             &self.bubblewrap,
             &self.root_filesystem,
@@ -87,7 +100,7 @@ impl SandboxFixture {
                 .map(|argument| (*argument).to_owned())
                 .collect(),
         )
-        .timeout(TEST_TIMEOUT)
+        .timeout(timeout)
         .build()
         .expect("build Bubblewrap handler");
 
@@ -150,6 +163,63 @@ fn linux_sandbox_enforces_filesystem_socket_and_descriptor_boundaries() {
     fixture
         .run_sandbox(&["test", "!", "-e"], vec![child_descriptor_path])
         .expect("non-standard host descriptor must be closed before Tool execution");
+}
+
+#[test]
+#[ignore = "requires Linux Bubblewrap and static BusyBox"]
+fn linux_sandbox_terminates_descendants_after_initial_process_exit() {
+    let fixture = SandboxFixture::new("exit-descendant-cleanup");
+
+    fixture
+        .run_sandbox(&["sh", "-c", EXITING_PARENT_SCRIPT], Vec::new())
+        .expect("initial sandbox process must exit successfully");
+    assert!(
+        fixture
+            .scratch_directory
+            .join("exit-descendant-started")
+            .is_file(),
+        "background descendant must start before the initial process exits"
+    );
+
+    thread::sleep(DESCENDANT_OBSERVATION_DELAY);
+    assert!(
+        !fixture
+            .scratch_directory
+            .join("exit-descendant-survived")
+            .exists(),
+        "background descendant must not survive the initial process"
+    );
+}
+
+#[test]
+#[ignore = "requires Linux Bubblewrap and static BusyBox"]
+fn linux_sandbox_terminates_descendants_after_timeout() {
+    let fixture = SandboxFixture::new("timeout-descendant-cleanup");
+
+    assert!(matches!(
+        fixture.run_sandbox_with_timeout(
+            &["sh", "-c", TIMED_OUT_PARENT_SCRIPT],
+            Vec::new(),
+            DESCENDANT_TIMEOUT,
+        ),
+        Err(ProcessAdapterError::TimedOut)
+    ));
+    assert!(
+        fixture
+            .scratch_directory
+            .join("timeout-descendant-started")
+            .is_file(),
+        "background descendant must start before timeout enforcement"
+    );
+
+    thread::sleep(DESCENDANT_OBSERVATION_DELAY);
+    assert!(
+        !fixture
+            .scratch_directory
+            .join("timeout-descendant-survived")
+            .exists(),
+        "background descendant must not survive timeout enforcement"
+    );
 }
 
 #[test]
