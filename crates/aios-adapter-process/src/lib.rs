@@ -7,7 +7,7 @@
 //! Linux callers may opt into an experimental Bubblewrap launcher with an explicit read-only
 //! root filesystem, a separate writable scratch directory, namespace isolation, and no network.
 //! This crate is still not complete operating-system Capability enforcement: cgroups, seccomp,
-//! descriptor-bound filesystem access, and Task-derived mounts remain future work.
+//! descriptor-bound filesystem access, and Capability-derived mounts remain future work.
 
 use std::collections::BTreeMap;
 use std::error::Error;
@@ -19,6 +19,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use aios_adapter_tool::{ToolFailure, ToolHandler, ToolOutput};
+use aios_runtime::TaskId;
 
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 pub const MAX_TIMEOUT: Duration = Duration::from_secs(60 * 60);
@@ -32,6 +33,92 @@ pub const MAX_TOTAL_ENVIRONMENT_BYTES: usize = 64 * 1_024;
 pub const MAX_SANDBOX_PATH_BYTES: usize = 4_096;
 
 const WAIT_POLL_INTERVAL: Duration = Duration::from_millis(5);
+
+/// Trusted owner of the host directory used for Task-scoped sandbox scratch space.
+///
+/// The configured root must already exist as a real, absolute, owner-only directory. Each call
+/// to [`create`](Self::create) creates one new empty child named from a [`TaskId`]. Existing Task
+/// directories are rejected rather than reused.
+pub struct TaskScratchManager {
+    root_directory: PathBuf,
+    root_identity: DirectoryIdentity,
+}
+
+impl TaskScratchManager {
+    pub fn new(root_directory: impl Into<PathBuf>) -> Result<Self, ProcessAdapterError> {
+        let root_directory = canonical_task_scratch_root(&root_directory.into())?;
+        let root_identity = DirectoryIdentity::read(&root_directory)?;
+        Ok(Self {
+            root_directory,
+            root_identity,
+        })
+    }
+
+    /// Creates a new empty scratch directory bound to `task_id`.
+    pub fn create(&self, task_id: TaskId) -> Result<TaskScratch, ProcessAdapterError> {
+        self.validate_root()?;
+
+        let directory = self.root_directory.join(task_id.to_string());
+        if directory.as_os_str().as_encoded_bytes().len() > MAX_SANDBOX_PATH_BYTES {
+            return Err(ProcessAdapterError::InvalidSandbox);
+        }
+        create_owner_only_directory(&directory)?;
+
+        let validated = self
+            .validate_root()
+            .and_then(|()| canonical_task_scratch_directory(&directory, &self.root_directory))
+            .and_then(|directory| {
+                DirectoryIdentity::read(&directory)
+                    .map(|directory_identity| (directory, directory_identity))
+            });
+        match validated {
+            Ok((directory, directory_identity)) => Ok(TaskScratch {
+                task_id,
+                directory,
+                directory_identity,
+            }),
+            Err(error) => {
+                let _result = fs::remove_dir(&directory);
+                Err(error)
+            }
+        }
+    }
+
+    #[must_use]
+    pub fn root_directory(&self) -> &Path {
+        &self.root_directory
+    }
+
+    fn validate_root(&self) -> Result<(), ProcessAdapterError> {
+        validate_owner_only_directory(&self.root_directory)?;
+        if DirectoryIdentity::read(&self.root_directory)? != self.root_identity {
+            return Err(ProcessAdapterError::InvalidSandbox);
+        }
+        Ok(())
+    }
+}
+
+/// Newly created, Task-bound scratch directory authority.
+///
+/// This type intentionally does not implement `Clone`, `Debug`, or serialization. Cleanup is an
+/// explicit runtime lifecycle concern; dropping this value does not delete Tool-created files.
+pub struct TaskScratch {
+    task_id: TaskId,
+    directory: PathBuf,
+    directory_identity: DirectoryIdentity,
+}
+
+impl TaskScratch {
+    #[must_use]
+    pub fn task_id(&self) -> TaskId {
+        self.task_id
+    }
+
+    #[must_use]
+    pub fn directory(&self) -> &Path {
+        &self.directory
+    }
+}
 
 /// Trusted policy for model-controlled arguments passed to one configured executable.
 ///
@@ -110,6 +197,7 @@ pub struct BubblewrapProcessToolBuilder {
     root_filesystem: PathBuf,
     sandbox_executable: PathBuf,
     scratch_directory: PathBuf,
+    task_scratch_identity: Option<DirectoryIdentity>,
     fixed_arguments: Vec<String>,
     environment: Vec<(String, String)>,
     timeout: Duration,
@@ -132,11 +220,34 @@ impl BubblewrapProcessToolBuilder {
             root_filesystem: root_filesystem.into(),
             sandbox_executable: sandbox_executable.into(),
             scratch_directory: scratch_directory.into(),
+            task_scratch_identity: None,
             fixed_arguments: Vec::new(),
             environment: Vec::new(),
             timeout: DEFAULT_TIMEOUT,
             argument_policy: Box::new(argument_policy),
         }
+    }
+
+    /// Creates a builder using scratch space freshly allocated for one Task.
+    pub fn new_for_task<P>(
+        bubblewrap: impl Into<PathBuf>,
+        root_filesystem: impl Into<PathBuf>,
+        sandbox_executable: impl Into<PathBuf>,
+        task_scratch: &TaskScratch,
+        argument_policy: P,
+    ) -> Self
+    where
+        P: ProcessArgumentPolicy + 'static,
+    {
+        let mut builder = Self::new(
+            bubblewrap,
+            root_filesystem,
+            sandbox_executable,
+            &task_scratch.directory,
+            argument_policy,
+        );
+        builder.task_scratch_identity = Some(task_scratch.directory_identity);
+        builder
     }
 
     #[must_use]
@@ -172,6 +283,9 @@ impl BubblewrapProcessToolBuilder {
         validate_sandbox_mount_points(&root_filesystem)?;
         let scratch_directory =
             canonical_scratch_directory(&self.scratch_directory, &root_filesystem)?;
+        if let Some(identity) = self.task_scratch_identity {
+            validate_task_scratch_identity(&scratch_directory, identity)?;
+        }
         let (executable, executable_identity, sandbox_executable) =
             canonical_sandbox_executable(&root_filesystem, &self.sandbox_executable)?;
         let environment = validate_environment(self.environment)?;
@@ -180,6 +294,7 @@ impl BubblewrapProcessToolBuilder {
             executable,
             executable_identity,
             working_directory: scratch_directory,
+            working_directory_identity: self.task_scratch_identity,
             fixed_arguments: self.fixed_arguments,
             environment,
             timeout: self.timeout,
@@ -246,6 +361,7 @@ impl ProcessToolBuilder {
             executable,
             executable_identity,
             working_directory,
+            working_directory_identity: None,
             fixed_arguments: self.fixed_arguments,
             environment,
             timeout: self.timeout,
@@ -264,6 +380,7 @@ pub struct ProcessToolHandler {
     executable: PathBuf,
     executable_identity: ExecutableIdentity,
     working_directory: PathBuf,
+    working_directory_identity: Option<DirectoryIdentity>,
     fixed_arguments: Vec<String>,
     environment: BTreeMap<String, String>,
     timeout: Duration,
@@ -293,6 +410,9 @@ impl ProcessToolHandler {
         }
         if ExecutableIdentity::read(&self.executable)? != self.executable_identity {
             return Err(ProcessAdapterError::ExecutableChanged);
+        }
+        if let Some(identity) = self.working_directory_identity {
+            validate_task_scratch_identity(&self.working_directory, identity)?;
         }
 
         let mut command = match &self.launcher {
@@ -384,6 +504,40 @@ impl ToolHandler for ProcessToolHandler {
 }
 
 #[cfg(unix)]
+#[derive(Clone, Copy, Eq, PartialEq)]
+struct DirectoryIdentity {
+    device: u64,
+    inode: u64,
+}
+
+#[cfg(unix)]
+impl DirectoryIdentity {
+    fn read(path: &Path) -> Result<Self, ProcessAdapterError> {
+        use std::os::unix::fs::MetadataExt;
+
+        let metadata = fs::metadata(path).map_err(|_| ProcessAdapterError::InvalidSandbox)?;
+        if !metadata.is_dir() {
+            return Err(ProcessAdapterError::InvalidSandbox);
+        }
+        Ok(Self {
+            device: metadata.dev(),
+            inode: metadata.ino(),
+        })
+    }
+}
+
+#[cfg(not(unix))]
+#[derive(Clone, Copy, Eq, PartialEq)]
+struct DirectoryIdentity;
+
+#[cfg(not(unix))]
+impl DirectoryIdentity {
+    fn read(_path: &Path) -> Result<Self, ProcessAdapterError> {
+        Err(ProcessAdapterError::UnsupportedPlatform)
+    }
+}
+
+#[cfg(unix)]
 #[derive(Eq, PartialEq)]
 struct ExecutableIdentity {
     device: u64,
@@ -439,6 +593,93 @@ fn canonical_directory(path: &Path) -> Result<PathBuf, ProcessAdapterError> {
         return Err(ProcessAdapterError::InvalidConfig);
     }
     Ok(canonical)
+}
+
+#[cfg(unix)]
+fn canonical_task_scratch_root(path: &Path) -> Result<PathBuf, ProcessAdapterError> {
+    if !path.is_absolute() || path.as_os_str().as_encoded_bytes().len() > MAX_SANDBOX_PATH_BYTES {
+        return Err(ProcessAdapterError::InvalidSandbox);
+    }
+    let metadata = fs::symlink_metadata(path).map_err(|_| ProcessAdapterError::InvalidSandbox)?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err(ProcessAdapterError::InvalidSandbox);
+    }
+    validate_owner_only_directory(path)?;
+
+    let canonical = fs::canonicalize(path).map_err(|_| ProcessAdapterError::InvalidSandbox)?;
+    if canonical == Path::new("/") {
+        return Err(ProcessAdapterError::InvalidSandbox);
+    }
+    Ok(canonical)
+}
+
+#[cfg(not(unix))]
+fn canonical_task_scratch_root(_path: &Path) -> Result<PathBuf, ProcessAdapterError> {
+    Err(ProcessAdapterError::UnsupportedPlatform)
+}
+
+#[cfg(unix)]
+fn validate_owner_only_directory(path: &Path) -> Result<(), ProcessAdapterError> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let metadata = fs::symlink_metadata(path).map_err(|_| ProcessAdapterError::InvalidSandbox)?;
+    if metadata.file_type().is_symlink()
+        || !metadata.is_dir()
+        || metadata.permissions().mode() & 0o077 != 0
+    {
+        return Err(ProcessAdapterError::InvalidSandbox);
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn validate_owner_only_directory(_path: &Path) -> Result<(), ProcessAdapterError> {
+    Err(ProcessAdapterError::UnsupportedPlatform)
+}
+
+#[cfg(unix)]
+fn create_owner_only_directory(path: &Path) -> Result<(), ProcessAdapterError> {
+    use std::fs::DirBuilder;
+    use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+
+    let mut builder = DirBuilder::new();
+    builder.mode(0o700);
+    builder
+        .create(path)
+        .map_err(|_| ProcessAdapterError::InvalidSandbox)?;
+    if fs::set_permissions(path, fs::Permissions::from_mode(0o700)).is_err() {
+        let _result = fs::remove_dir(path);
+        return Err(ProcessAdapterError::InvalidSandbox);
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn create_owner_only_directory(_path: &Path) -> Result<(), ProcessAdapterError> {
+    Err(ProcessAdapterError::UnsupportedPlatform)
+}
+
+fn canonical_task_scratch_directory(
+    path: &Path,
+    root_directory: &Path,
+) -> Result<PathBuf, ProcessAdapterError> {
+    validate_owner_only_directory(path)?;
+    let canonical = fs::canonicalize(path).map_err(|_| ProcessAdapterError::InvalidSandbox)?;
+    if canonical.parent() != Some(root_directory) {
+        return Err(ProcessAdapterError::InvalidSandbox);
+    }
+    Ok(canonical)
+}
+
+fn validate_task_scratch_identity(
+    path: &Path,
+    expected: DirectoryIdentity,
+) -> Result<(), ProcessAdapterError> {
+    validate_owner_only_directory(path)?;
+    if DirectoryIdentity::read(path)? != expected {
+        return Err(ProcessAdapterError::InvalidSandbox);
+    }
+    Ok(())
 }
 
 fn canonical_sandbox_root(path: &Path) -> Result<PathBuf, ProcessAdapterError> {
@@ -609,22 +850,35 @@ fn is_valid_environment_name(name: &str) -> bool {
 
 #[cfg(all(test, unix))]
 mod tests {
-    use std::fs;
-    use std::os::unix::fs::symlink;
+    use std::fs::{self, DirBuilder};
+    use std::os::unix::fs::{DirBuilderExt, PermissionsExt, symlink};
     use std::path::{Path, PathBuf};
     use std::time::Duration;
 
     use aios_adapter_tool::ToolAdapterBuilder;
     use aios_core::{ApprovalPolicy, Budget, CapabilitySet, NetworkPolicy, TaskSpec};
-    use aios_runtime::{ExecutionOutcome, SubmitResult, TaskSupervisor};
+    use aios_runtime::{ExecutionOutcome, SubmitResult, TaskId, TaskSupervisor};
 
     #[cfg(not(target_os = "linux"))]
     use super::BubblewrapProcessToolBuilder;
     use super::{
         MAX_ARGUMENT_BYTES, MAX_ARGUMENTS, ProcessAdapterError, ProcessToolBuilder,
-        bubblewrap_arguments, canonical_sandbox_executable, canonical_sandbox_root,
-        canonical_scratch_directory, validate_sandbox_absolute_path, validate_sandbox_mount_points,
+        TaskScratchManager, bubblewrap_arguments, canonical_sandbox_executable,
+        canonical_sandbox_root, canonical_scratch_directory, validate_sandbox_absolute_path,
+        validate_sandbox_mount_points, validate_task_scratch_identity,
     };
+
+    fn private_test_directory(label: &str) -> PathBuf {
+        let directory = std::env::temp_dir().join(format!(
+            "aios-process-{label}-{}-{}",
+            std::process::id(),
+            TaskId::new()
+        ));
+        let mut builder = DirBuilder::new();
+        builder.mode(0o700);
+        builder.create(&directory).expect("create test directory");
+        directory
+    }
 
     fn executable(candidates: &[&str]) -> PathBuf {
         candidates
@@ -683,6 +937,113 @@ mod tests {
         );
         assert!(!arguments.iter().any(|argument| argument == "--share-net"));
         assert!(!arguments.iter().any(|argument| argument == "/run"));
+    }
+
+    #[test]
+    fn task_scratch_is_new_owner_only_and_task_derived() {
+        let root = private_test_directory("task-scratch");
+        let manager = TaskScratchManager::new(&root).expect("open scratch root");
+        let first_task = TaskId::new();
+        let second_task = TaskId::new();
+
+        let first = manager.create(first_task).expect("create first scratch");
+        let second = manager.create(second_task).expect("create second scratch");
+
+        assert_eq!(first.task_id(), first_task);
+        assert_eq!(first.directory().parent(), Some(manager.root_directory()));
+        assert_eq!(
+            first.directory().file_name(),
+            Some(first_task.to_string().as_ref())
+        );
+        assert_ne!(first.directory(), second.directory());
+        assert_eq!(
+            fs::metadata(first.directory())
+                .expect("read scratch metadata")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o700
+        );
+        assert_eq!(
+            fs::read_dir(first.directory())
+                .expect("read empty scratch")
+                .count(),
+            0
+        );
+        assert!(matches!(
+            manager.create(first_task),
+            Err(ProcessAdapterError::InvalidSandbox)
+        ));
+
+        fs::remove_dir_all(root).expect("remove scratch fixture");
+    }
+
+    #[test]
+    fn task_scratch_rejects_unsafe_or_replaced_roots() {
+        let fixture = private_test_directory("task-scratch-boundary");
+        let public_root = fixture.join("public");
+        fs::create_dir(&public_root).expect("create public root");
+        fs::set_permissions(&public_root, fs::Permissions::from_mode(0o755))
+            .expect("set public root permissions");
+        assert!(matches!(
+            TaskScratchManager::new(&public_root),
+            Err(ProcessAdapterError::InvalidSandbox)
+        ));
+
+        let private_root = fixture.join("private");
+        let mut builder = DirBuilder::new();
+        builder.mode(0o700);
+        builder.create(&private_root).expect("create private root");
+        let symlink_root = fixture.join("symlink");
+        symlink(&private_root, &symlink_root).expect("create scratch root symlink");
+        assert!(matches!(
+            TaskScratchManager::new(&symlink_root),
+            Err(ProcessAdapterError::InvalidSandbox)
+        ));
+
+        let manager = TaskScratchManager::new(&private_root).expect("open private root");
+        let moved_root = fixture.join("moved");
+        fs::rename(&private_root, &moved_root).expect("replace scratch root");
+        builder
+            .create(&private_root)
+            .expect("create replacement root");
+        assert!(matches!(
+            manager.create(TaskId::new()),
+            Err(ProcessAdapterError::InvalidSandbox)
+        ));
+
+        fs::remove_dir_all(fixture).expect("remove scratch boundary fixture");
+    }
+
+    #[test]
+    fn task_scratch_identity_rejects_permission_changes_and_path_replacement() {
+        let root = private_test_directory("task-scratch-identity");
+        let manager = TaskScratchManager::new(&root).expect("open scratch root");
+        let scratch = manager.create(TaskId::new()).expect("create Task scratch");
+
+        fs::set_permissions(scratch.directory(), fs::Permissions::from_mode(0o755))
+            .expect("change scratch permissions");
+        assert!(matches!(
+            validate_task_scratch_identity(scratch.directory(), scratch.directory_identity),
+            Err(ProcessAdapterError::InvalidSandbox)
+        ));
+
+        fs::set_permissions(scratch.directory(), fs::Permissions::from_mode(0o700))
+            .expect("restore scratch permissions");
+        let replacement = scratch.directory().to_path_buf();
+        let moved = root.join("moved-task-scratch");
+        fs::rename(&replacement, &moved).expect("move original scratch");
+        let mut builder = DirBuilder::new();
+        builder.mode(0o700);
+        builder
+            .create(&replacement)
+            .expect("create replacement scratch");
+        assert!(matches!(
+            validate_task_scratch_identity(&replacement, scratch.directory_identity),
+            Err(ProcessAdapterError::InvalidSandbox)
+        ));
+
+        fs::remove_dir_all(root).expect("remove scratch identity fixture");
     }
 
     #[test]

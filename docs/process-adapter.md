@@ -5,7 +5,8 @@
 Experimental child-process Tool handlers with two explicit execution modes:
 
 - `ProcessToolBuilder` starts a bounded direct child for trusted executables;
-- `BubblewrapProcessToolBuilder` starts a deny-network Linux sandbox with a prepared read-only root filesystem and one writable scratch directory.
+- `TaskScratchManager` allocates fresh Task-ID-scoped scratch beneath a trusted owner-only root;
+- `BubblewrapProcessToolBuilder` starts a deny-network Linux sandbox with a prepared read-only root filesystem and one writable Task scratch directory.
 
 The Bubblewrap path is an isolation foundation, not complete operating-system Capability enforcement.
 
@@ -31,18 +32,21 @@ The Linux isolated builder additionally requires:
 - an absolute executable path inside that root filesystem;
 - a separate scratch directory mounted at `/workspace`.
 
-The prepared root must contain directory mount points for `/proc`, `/dev`, `/tmp`, and `/workspace`. The root and scratch trees must not overlap. Trusted startup code is responsible for creating a minimal, versioned root filesystem and an empty Task-scoped scratch directory. Neither tree may contain daemon or approval sockets, event databases, host credentials, or unrelated user data.
+The prepared root must contain directory mount points for `/proc`, `/dev`, `/tmp`, and `/workspace`. The root and scratch trees must not overlap. Trusted startup code is responsible for creating a minimal, versioned root filesystem and an existing absolute scratch root with owner-only permissions. `TaskScratchManager` rejects symlink roots, insecure permissions, root replacement, and an existing Task child. It creates an empty `0700` child named from the exact `TaskId`. `BubblewrapProcessToolBuilder::new_for_task` retains the created directory identity and revalidates it before each spawn. The path-taking `new` constructor remains for backward compatibility with trusted callers but does not establish Task binding.
+
+Neither the root filesystem nor scratch root may contain daemon or approval sockets, event databases, host credentials, or unrelated user data. Scratch cleanup is deliberately not automatic: the runtime must first stop and reap the Task's process tree, then use a separately reviewed cleanup path. Dropping `TaskScratch` never recursively deletes Tool-controlled content.
 
 ## Execution behavior
 
 1. The Tool Catalog maps a model-visible route to fixed Capability Tool and action identifiers.
 2. `ExecutionGate` authorizes and retains the complete Tool operation.
-3. The Process Adapter revalidates total argument bounds.
-4. The trusted argument policy evaluates the dynamic argument vector.
-5. The adapter verifies the configured executable identity.
-6. The direct mode starts the executable with fixed and dynamic argument arrays. The isolated mode starts the fixed Bubblewrap executable with a deterministic sandbox plan, followed by the exact executable and argument array.
-7. The child receives an otherwise empty environment and null standard streams.
-8. The adapter waits for successful exit or kills and reaps its direct child after the configured timeout.
+3. Trusted orchestration allocates new scratch for the Task and constructs the isolated handler with `new_for_task`.
+4. The Process Adapter revalidates total argument bounds.
+5. The trusted argument policy evaluates the dynamic argument vector.
+6. The adapter verifies the configured executable and Task scratch identities.
+7. The direct mode starts the executable with fixed and dynamic argument arrays. The isolated mode starts the fixed Bubblewrap executable with a deterministic sandbox plan, followed by the exact executable and argument array.
+8. The child receives an otherwise empty environment and null standard streams.
+9. The adapter waits for successful exit or kills and reaps its direct child after the configured timeout.
 
 No step invokes a shell, interprets argument text, or searches `PATH` for the executable. Dynamic arguments such as shell metacharacters remain literal strings.
 
@@ -66,6 +70,7 @@ Namespace or mount setup failure is an execution failure. The adapter never fall
 
 The `linux_bubblewrap` integration suite starts the real Bubblewrap executable with a static BusyBox probe. It verifies that:
 
+- the mounted scratch was freshly allocated from the fixture Task ID;
 - `/workspace` writes reach only the declared scratch directory;
 - writes through the read-only root filesystem fail;
 - a host-only approval socket path is absent inside the sandbox;
@@ -81,7 +86,7 @@ AIOS_BUSYBOX_PATH=/usr/bin/busybox \
 cargo test -p aios-adapter-process --test linux_bubblewrap --locked -- --ignored
 ```
 
-Passing this suite is evidence for the current deny-network launch boundary only. It does not verify Task-derived mounts, cgroup budgets, seccomp, destination-scoped networking, or the future approval API.
+Passing this suite is evidence for the current Task scratch and deny-network launch boundary only. It does not verify Capability-derived mounts, cgroup budgets, seccomp, destination-scoped networking, or the future approval API.
 
 ## Bounds
 
@@ -121,12 +126,13 @@ The direct mode does not:
 
 The Bubblewrap mode narrows filesystem visibility, denies host network access, closes unpreserved descriptors in the launcher, and supplies namespace process containment. It still does not:
 
-- derive root or scratch mounts from the current Task's Filesystem Capability;
+- derive the root filesystem or additional mounts from the current Task's Filesystem Capability;
 - provide approved destination-scoped network access;
 - enforce CPU or memory budgets through cgroups;
 - install a seccomp policy or descriptor-bound file access;
 - verify an immutable root filesystem image;
 - eliminate host-side executable and mount time-of-check/time-of-use races;
+- clean Task scratch after process-tree termination;
 - prove descendant cleanup for future asynchronous cancellation and additional adversarial variants;
 - expose a principal-separated approval API.
 
@@ -134,4 +140,4 @@ Executables registered in direct mode remain trusted. Argument policies in both 
 
 ## Next enforcement milestone
 
-With background descendant cleanup covered, next integrate this backend with Task-derived scratch creation and a minimal immutable root image. After that, cgroup budgets, seccomp, and destination-scoped network brokering can extend the same boundary. See [ADR-0006](adr/0006-bubblewrap-process-isolation.md).
+With fresh Task-ID-scoped scratch connected to the real Linux boundary suite, next build and verify a minimal immutable root image. After that, cgroup budgets, seccomp, descriptor-bound Capability mounts, and destination-scoped network brokering can extend the same boundary. See [ADR-0006](adr/0006-bubblewrap-process-isolation.md) and [ADR-0007](adr/0007-task-scoped-scratch.md).
