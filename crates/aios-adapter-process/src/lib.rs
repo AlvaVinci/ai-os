@@ -4,15 +4,16 @@
 //! a shell or searches `PATH`. Dynamic arguments are accepted only after a trusted policy approves
 //! them, and the child receives an empty environment except for explicitly configured values.
 //!
-//! This crate is not an operating-system sandbox. In particular, it does not yet provide a
-//! separate principal, descriptor allowlist, namespaces, cgroups, network isolation, or reliable
-//! descendant-process termination.
+//! Linux callers may opt into an experimental Bubblewrap launcher with an explicit read-only
+//! root filesystem, a separate writable scratch directory, namespace isolation, and no network.
+//! This crate is still not complete operating-system Capability enforcement: cgroups, seccomp,
+//! descriptor-bound filesystem access, and Task-derived mounts remain future work.
 
 use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt::{self, Display, Formatter};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -28,6 +29,7 @@ pub const MAX_ENVIRONMENT_VARIABLES: usize = 64;
 pub const MAX_ENVIRONMENT_NAME_BYTES: usize = 128;
 pub const MAX_ENVIRONMENT_VALUE_BYTES: usize = 4_096;
 pub const MAX_TOTAL_ENVIRONMENT_BYTES: usize = 64 * 1_024;
+pub const MAX_SANDBOX_PATH_BYTES: usize = 4_096;
 
 const WAIT_POLL_INTERVAL: Duration = Duration::from_millis(5);
 
@@ -52,6 +54,8 @@ where
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ProcessAdapterError {
     InvalidConfig,
+    InvalidSandbox,
+    UnsupportedPlatform,
     InvalidArguments,
     ArgumentsDenied,
     ExecutableChanged,
@@ -66,6 +70,8 @@ impl Display for ProcessAdapterError {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
         let message = match self {
             Self::InvalidConfig => "invalid Process Adapter configuration",
+            Self::InvalidSandbox => "invalid Process Adapter sandbox configuration",
+            Self::UnsupportedPlatform => "Process Adapter sandbox is unsupported on this platform",
             Self::InvalidArguments => "invalid process arguments",
             Self::ArgumentsDenied => "process arguments denied",
             Self::ExecutableChanged => "configured executable identity changed",
@@ -92,6 +98,100 @@ pub struct ProcessToolBuilder {
     environment: Vec<(String, String)>,
     timeout: Duration,
     argument_policy: Box<dyn ProcessArgumentPolicy>,
+}
+
+/// Trusted builder for one Linux Bubblewrap-isolated child-process Tool handler.
+///
+/// `root_filesystem` is mounted read-only at `/`. `scratch_directory` is the only configured
+/// writable host path and is mounted at `/workspace`. The sandbox always receives a new network
+/// namespace; this initial backend deliberately has no network-enabled mode.
+pub struct BubblewrapProcessToolBuilder {
+    bubblewrap: PathBuf,
+    root_filesystem: PathBuf,
+    sandbox_executable: PathBuf,
+    scratch_directory: PathBuf,
+    fixed_arguments: Vec<String>,
+    environment: Vec<(String, String)>,
+    timeout: Duration,
+    argument_policy: Box<dyn ProcessArgumentPolicy>,
+}
+
+impl BubblewrapProcessToolBuilder {
+    pub fn new<P>(
+        bubblewrap: impl Into<PathBuf>,
+        root_filesystem: impl Into<PathBuf>,
+        sandbox_executable: impl Into<PathBuf>,
+        scratch_directory: impl Into<PathBuf>,
+        argument_policy: P,
+    ) -> Self
+    where
+        P: ProcessArgumentPolicy + 'static,
+    {
+        Self {
+            bubblewrap: bubblewrap.into(),
+            root_filesystem: root_filesystem.into(),
+            sandbox_executable: sandbox_executable.into(),
+            scratch_directory: scratch_directory.into(),
+            fixed_arguments: Vec::new(),
+            environment: Vec::new(),
+            timeout: DEFAULT_TIMEOUT,
+            argument_policy: Box::new(argument_policy),
+        }
+    }
+
+    #[must_use]
+    pub fn fixed_arguments(mut self, arguments: Vec<String>) -> Self {
+        self.fixed_arguments = arguments;
+        self
+    }
+
+    #[must_use]
+    pub fn environment(mut self, environment: Vec<(String, String)>) -> Self {
+        self.environment = environment;
+        self
+    }
+
+    #[must_use]
+    pub fn timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = timeout;
+        self
+    }
+
+    pub fn build(self) -> Result<ProcessToolHandler, ProcessAdapterError> {
+        if !cfg!(target_os = "linux") {
+            return Err(ProcessAdapterError::UnsupportedPlatform);
+        }
+        if self.timeout.is_zero() || self.timeout > MAX_TIMEOUT {
+            return Err(ProcessAdapterError::InvalidConfig);
+        }
+        validate_arguments(&self.fixed_arguments, &[])?;
+
+        let bubblewrap = canonical_executable(&self.bubblewrap)?;
+        let bubblewrap_identity = ExecutableIdentity::read(&bubblewrap)?;
+        let root_filesystem = canonical_sandbox_root(&self.root_filesystem)?;
+        validate_sandbox_mount_points(&root_filesystem)?;
+        let scratch_directory =
+            canonical_scratch_directory(&self.scratch_directory, &root_filesystem)?;
+        let (executable, executable_identity, sandbox_executable) =
+            canonical_sandbox_executable(&root_filesystem, &self.sandbox_executable)?;
+        let environment = validate_environment(self.environment)?;
+
+        Ok(ProcessToolHandler {
+            executable,
+            executable_identity,
+            working_directory: scratch_directory,
+            fixed_arguments: self.fixed_arguments,
+            environment,
+            timeout: self.timeout,
+            argument_policy: self.argument_policy,
+            launcher: ProcessLauncher::Bubblewrap {
+                bubblewrap,
+                bubblewrap_identity,
+                root_filesystem,
+                sandbox_executable,
+            },
+        })
+    }
 }
 
 impl ProcessToolBuilder {
@@ -150,6 +250,7 @@ impl ProcessToolBuilder {
             environment,
             timeout: self.timeout,
             argument_policy: self.argument_policy,
+            launcher: ProcessLauncher::Direct,
         })
     }
 }
@@ -167,6 +268,17 @@ pub struct ProcessToolHandler {
     environment: BTreeMap<String, String>,
     timeout: Duration,
     argument_policy: Box<dyn ProcessArgumentPolicy>,
+    launcher: ProcessLauncher,
+}
+
+enum ProcessLauncher {
+    Direct,
+    Bubblewrap {
+        bubblewrap: PathBuf,
+        bubblewrap_identity: ExecutableIdentity,
+        root_filesystem: PathBuf,
+        sandbox_executable: PathBuf,
+    },
 }
 
 impl ProcessToolHandler {
@@ -183,11 +295,38 @@ impl ProcessToolHandler {
             return Err(ProcessAdapterError::ExecutableChanged);
         }
 
-        let mut command = Command::new(&self.executable);
+        let mut command = match &self.launcher {
+            ProcessLauncher::Direct => {
+                let mut command = Command::new(&self.executable);
+                command
+                    .args(&self.fixed_arguments)
+                    .args(&dynamic_arguments)
+                    .current_dir(&self.working_directory);
+                command
+            }
+            ProcessLauncher::Bubblewrap {
+                bubblewrap,
+                bubblewrap_identity,
+                root_filesystem,
+                sandbox_executable,
+            } => {
+                if ExecutableIdentity::read(bubblewrap)? != *bubblewrap_identity {
+                    return Err(ProcessAdapterError::ExecutableChanged);
+                }
+                let mut command = Command::new(bubblewrap);
+                command
+                    .args(bubblewrap_arguments(
+                        root_filesystem,
+                        &self.working_directory,
+                        sandbox_executable,
+                    ))
+                    .args(&self.fixed_arguments)
+                    .args(&dynamic_arguments)
+                    .current_dir("/");
+                command
+            }
+        };
         command
-            .args(&self.fixed_arguments)
-            .args(dynamic_arguments)
-            .current_dir(&self.working_directory)
             .env_clear()
             .envs(&self.environment)
             .stdin(Stdio::null())
@@ -302,6 +441,110 @@ fn canonical_directory(path: &Path) -> Result<PathBuf, ProcessAdapterError> {
     Ok(canonical)
 }
 
+fn canonical_sandbox_root(path: &Path) -> Result<PathBuf, ProcessAdapterError> {
+    let canonical = canonical_directory(path).map_err(|_| ProcessAdapterError::InvalidSandbox)?;
+    if canonical == Path::new("/") {
+        return Err(ProcessAdapterError::InvalidSandbox);
+    }
+    Ok(canonical)
+}
+
+fn canonical_scratch_directory(
+    path: &Path,
+    root_filesystem: &Path,
+) -> Result<PathBuf, ProcessAdapterError> {
+    let canonical = canonical_directory(path).map_err(|_| ProcessAdapterError::InvalidSandbox)?;
+    if canonical == Path::new("/")
+        || canonical.starts_with(root_filesystem)
+        || root_filesystem.starts_with(&canonical)
+    {
+        return Err(ProcessAdapterError::InvalidSandbox);
+    }
+    Ok(canonical)
+}
+
+fn canonical_sandbox_executable(
+    root_filesystem: &Path,
+    sandbox_executable: &Path,
+) -> Result<(PathBuf, ExecutableIdentity, PathBuf), ProcessAdapterError> {
+    validate_sandbox_absolute_path(sandbox_executable)?;
+    let relative = sandbox_executable
+        .strip_prefix("/")
+        .map_err(|_| ProcessAdapterError::InvalidSandbox)?;
+    let executable = fs::canonicalize(root_filesystem.join(relative))
+        .map_err(|_| ProcessAdapterError::InvalidSandbox)?;
+    if !executable.starts_with(root_filesystem) {
+        return Err(ProcessAdapterError::InvalidSandbox);
+    }
+    let identity =
+        ExecutableIdentity::read(&executable).map_err(|_| ProcessAdapterError::InvalidSandbox)?;
+    let resolved_relative = executable
+        .strip_prefix(root_filesystem)
+        .map_err(|_| ProcessAdapterError::InvalidSandbox)?;
+    let resolved_sandbox_path = Path::new("/").join(resolved_relative);
+    Ok((executable, identity, resolved_sandbox_path))
+}
+
+fn validate_sandbox_absolute_path(path: &Path) -> Result<(), ProcessAdapterError> {
+    if !path.is_absolute()
+        || path.as_os_str().as_encoded_bytes().len() > MAX_SANDBOX_PATH_BYTES
+        || path.as_os_str().as_encoded_bytes().contains(&0)
+    {
+        return Err(ProcessAdapterError::InvalidSandbox);
+    }
+
+    let mut components = path.components();
+    if components.next() != Some(Component::RootDir)
+        || !components.all(|component| matches!(component, Component::Normal(_)))
+    {
+        return Err(ProcessAdapterError::InvalidSandbox);
+    }
+    Ok(())
+}
+
+fn validate_sandbox_mount_points(root_filesystem: &Path) -> Result<(), ProcessAdapterError> {
+    for relative in ["proc", "dev", "tmp", "workspace"] {
+        let metadata = fs::symlink_metadata(root_filesystem.join(relative))
+            .map_err(|_| ProcessAdapterError::InvalidSandbox)?;
+        if !metadata.file_type().is_dir() {
+            return Err(ProcessAdapterError::InvalidSandbox);
+        }
+    }
+    Ok(())
+}
+
+fn bubblewrap_arguments(
+    root_filesystem: &Path,
+    scratch_directory: &Path,
+    sandbox_executable: &Path,
+) -> Vec<std::ffi::OsString> {
+    [
+        std::ffi::OsString::from("--unshare-all"),
+        std::ffi::OsString::from("--disable-userns"),
+        std::ffi::OsString::from("--die-with-parent"),
+        std::ffi::OsString::from("--new-session"),
+        std::ffi::OsString::from("--cap-drop"),
+        std::ffi::OsString::from("ALL"),
+        std::ffi::OsString::from("--ro-bind"),
+        root_filesystem.as_os_str().to_owned(),
+        std::ffi::OsString::from("/"),
+        std::ffi::OsString::from("--proc"),
+        std::ffi::OsString::from("/proc"),
+        std::ffi::OsString::from("--dev"),
+        std::ffi::OsString::from("/dev"),
+        std::ffi::OsString::from("--tmpfs"),
+        std::ffi::OsString::from("/tmp"),
+        std::ffi::OsString::from("--bind"),
+        scratch_directory.as_os_str().to_owned(),
+        std::ffi::OsString::from("/workspace"),
+        std::ffi::OsString::from("--chdir"),
+        std::ffi::OsString::from("/workspace"),
+        std::ffi::OsString::from("--"),
+        sandbox_executable.as_os_str().to_owned(),
+    ]
+    .into()
+}
+
 fn validate_arguments(fixed: &[String], dynamic: &[String]) -> Result<(), ProcessAdapterError> {
     let count = fixed
         .len()
@@ -365,6 +608,8 @@ fn is_valid_environment_name(name: &str) -> bool {
 
 #[cfg(all(test, unix))]
 mod tests {
+    use std::fs;
+    use std::os::unix::fs::symlink;
     use std::path::{Path, PathBuf};
     use std::time::Duration;
 
@@ -372,7 +617,12 @@ mod tests {
     use aios_core::{ApprovalPolicy, Budget, CapabilitySet, NetworkPolicy, TaskSpec};
     use aios_runtime::{ExecutionOutcome, SubmitResult, TaskSupervisor};
 
-    use super::{MAX_ARGUMENT_BYTES, MAX_ARGUMENTS, ProcessAdapterError, ProcessToolBuilder};
+    use super::{
+        BubblewrapProcessToolBuilder, MAX_ARGUMENT_BYTES, MAX_ARGUMENTS, ProcessAdapterError,
+        ProcessToolBuilder, bubblewrap_arguments, canonical_sandbox_executable,
+        canonical_sandbox_root, canonical_scratch_directory, validate_sandbox_absolute_path,
+        validate_sandbox_mount_points,
+    };
 
     fn executable(candidates: &[&str]) -> PathBuf {
         candidates
@@ -387,6 +637,125 @@ mod tests {
         P: super::ProcessArgumentPolicy + 'static,
     {
         ProcessToolBuilder::new(executable, Path::new("/"), argument_policy)
+    }
+
+    #[test]
+    fn bubblewrap_plan_denies_network_and_exposes_only_declared_mounts() {
+        let arguments = bubblewrap_arguments(
+            Path::new("/opt/aios/rootfs"),
+            Path::new("/var/lib/aios/tasks/task-1"),
+            Path::new("/usr/bin/tool"),
+        );
+        let arguments: Vec<String> = arguments
+            .into_iter()
+            .map(|argument| argument.to_string_lossy().into_owned())
+            .collect();
+
+        assert_eq!(
+            arguments,
+            [
+                "--unshare-all",
+                "--disable-userns",
+                "--die-with-parent",
+                "--new-session",
+                "--cap-drop",
+                "ALL",
+                "--ro-bind",
+                "/opt/aios/rootfs",
+                "/",
+                "--proc",
+                "/proc",
+                "--dev",
+                "/dev",
+                "--tmpfs",
+                "/tmp",
+                "--bind",
+                "/var/lib/aios/tasks/task-1",
+                "/workspace",
+                "--chdir",
+                "/workspace",
+                "--",
+                "/usr/bin/tool",
+            ]
+        );
+        assert!(!arguments.iter().any(|argument| argument == "--share-net"));
+        assert!(!arguments.iter().any(|argument| argument == "/run"));
+    }
+
+    #[test]
+    fn sandbox_executable_path_must_be_bounded_absolute_and_traversal_free() {
+        assert!(validate_sandbox_absolute_path(Path::new("/usr/bin/tool")).is_ok());
+        assert!(validate_sandbox_absolute_path(Path::new("usr/bin/tool")).is_err());
+        assert!(validate_sandbox_absolute_path(Path::new("/usr/../bin/tool")).is_err());
+    }
+
+    #[test]
+    fn sandbox_rejects_host_root_overlapping_scratch_and_symlink_escape() {
+        assert!(matches!(
+            canonical_sandbox_root(Path::new("/")),
+            Err(ProcessAdapterError::InvalidSandbox)
+        ));
+
+        let fixture = std::env::temp_dir().join(format!(
+            "aios-process-sandbox-boundary-{}",
+            std::process::id()
+        ));
+        let root = fixture.join("root");
+        let scratch = root.join("scratch");
+        let executable_parent = root.join("usr/bin");
+        fs::create_dir_all(&scratch).expect("create overlapping scratch");
+        fs::create_dir_all(&executable_parent).expect("create executable parent");
+        symlink("/bin/true", executable_parent.join("tool")).expect("create escaping symlink");
+        let root = fs::canonicalize(root).expect("canonical root");
+        let scratch = fs::canonicalize(scratch).expect("canonical scratch");
+
+        assert!(matches!(
+            canonical_scratch_directory(&scratch, &root),
+            Err(ProcessAdapterError::InvalidSandbox)
+        ));
+        assert!(matches!(
+            canonical_sandbox_executable(&root, Path::new("/usr/bin/tool")),
+            Err(ProcessAdapterError::InvalidSandbox)
+        ));
+
+        fs::remove_dir_all(fixture).expect("remove sandbox boundary fixture");
+    }
+
+    #[test]
+    fn sandbox_mount_points_must_be_real_directories() {
+        let fixture = std::env::temp_dir().join(format!(
+            "aios-process-sandbox-mounts-{}",
+            std::process::id()
+        ));
+        for directory in ["proc", "dev", "tmp"] {
+            fs::create_dir_all(fixture.join(directory)).expect("create mount point");
+        }
+        symlink("/tmp", fixture.join("workspace")).expect("create mount-point symlink");
+
+        assert!(matches!(
+            validate_sandbox_mount_points(&fixture),
+            Err(ProcessAdapterError::InvalidSandbox)
+        ));
+
+        fs::remove_dir_all(fixture).expect("remove sandbox mount fixture");
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn bubblewrap_builder_fails_closed_outside_linux() {
+        let result = BubblewrapProcessToolBuilder::new(
+            "/usr/bin/bwrap",
+            "/opt/aios/rootfs",
+            "/usr/bin/tool",
+            "/var/lib/aios/tasks/task-1",
+            |_: &[String]| true,
+        )
+        .build();
+
+        assert!(matches!(
+            result,
+            Err(ProcessAdapterError::UnsupportedPlatform)
+        ));
     }
 
     #[test]
