@@ -12,8 +12,9 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use aios_adapter_process::{
-    BubblewrapProcessToolBuilder, ProcessAdapterError, ProcessToolBuilder, ProcessToolHandler,
-    TaskScratch, TaskScratchManager, VerifiedRootFilesystem, build_minimal_root_filesystem,
+    BubblewrapProcessToolBuilder, CgroupResourceBudget, CgroupV2Manager, ProcessAdapterError,
+    ProcessToolBuilder, ProcessToolHandler, TaskCgroup, TaskScratch, TaskScratchManager,
+    VerifiedRootFilesystem, build_minimal_root_filesystem,
 };
 use aios_runtime::TaskId;
 
@@ -21,8 +22,13 @@ const TEST_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_HTTP_REQUEST_BYTES: usize = 8 * 1_024;
 const DESCENDANT_TIMEOUT: Duration = Duration::from_secs(1);
 const DESCENDANT_OBSERVATION_DELAY: Duration = Duration::from_millis(2_500);
+const MEBIBYTE: u64 = 1_024 * 1_024;
 const EXITING_PARENT_SCRIPT: &str = "(touch /workspace/exit-descendant-started; sleep 2; touch /workspace/exit-descendant-survived) & while [ ! -e /workspace/exit-descendant-started ]; do :; done";
 const TIMED_OUT_PARENT_SCRIPT: &str = "(touch /workspace/timeout-descendant-started; sleep 2; touch /workspace/timeout-descendant-survived) & while [ ! -e /workspace/timeout-descendant-started ]; do :; done; sleep 10";
+
+fn cgroup_launcher() -> PathBuf {
+    PathBuf::from(env!("CARGO_BIN_EXE_aios-cgroup-launch"))
+}
 
 struct SandboxFixture {
     base: PathBuf,
@@ -98,6 +104,16 @@ impl SandboxFixture {
     }
 
     fn sandbox_handler(&self, fixed_arguments: &[&str], timeout: Duration) -> ProcessToolHandler {
+        self.sandbox_builder(fixed_arguments, timeout)
+            .build()
+            .expect("build Bubblewrap handler")
+    }
+
+    fn sandbox_builder(
+        &self,
+        fixed_arguments: &[&str],
+        timeout: Duration,
+    ) -> BubblewrapProcessToolBuilder {
         BubblewrapProcessToolBuilder::new_for_verified_task(
             &self.bubblewrap,
             &self.root_filesystem,
@@ -112,8 +128,16 @@ impl SandboxFixture {
                 .collect(),
         )
         .timeout(timeout)
-        .build()
-        .expect("build Bubblewrap handler")
+    }
+
+    fn create_task_cgroup(&self, budget: CgroupResourceBudget) -> TaskCgroup {
+        let root = env::var_os("AIOS_CGROUP_ROOT")
+            .map(PathBuf::from)
+            .expect("delegated cgroup root must be configured");
+        CgroupV2Manager::new(root)
+            .expect("open delegated cgroup v2 root")
+            .create(self.task_scratch.task_id(), budget)
+            .expect("create Task cgroup")
     }
 }
 
@@ -282,6 +306,95 @@ fn linux_sandbox_rejects_rootfs_content_change_before_spawn() {
         handler.run_checked(Vec::new()),
         Err(ProcessAdapterError::InvalidSandbox)
     ));
+}
+
+#[test]
+#[ignore = "requires Linux Bubblewrap, static BusyBox, and a delegated cgroup v2 subtree"]
+fn linux_sandbox_stops_at_cumulative_cpu_time_limit() {
+    let fixture = SandboxFixture::new("cpu-budget");
+    let task_cgroup = fixture.create_task_cgroup(
+        CgroupResourceBudget::new(Duration::from_millis(100), 256 * MEBIBYTE)
+            .expect("configure CPU budget"),
+    );
+    let cgroup_directory = task_cgroup.directory().to_owned();
+    let mut handler = fixture
+        .sandbox_builder(&["sh", "-c", "while :; do :; done"], TEST_TIMEOUT)
+        .task_cgroup(&task_cgroup, cgroup_launcher())
+        .build()
+        .expect("build cgroup-controlled handler");
+
+    assert!(matches!(
+        handler.run_checked(Vec::new()),
+        Err(ProcessAdapterError::ResourceLimitExceeded)
+    ));
+
+    drop(handler);
+    task_cgroup.finish().expect("remove CPU-limited cgroup");
+    assert!(!cgroup_directory.exists());
+}
+
+#[test]
+#[ignore = "requires Linux Bubblewrap, static BusyBox, and a delegated cgroup v2 subtree"]
+fn linux_sandbox_stops_at_resident_memory_limit() {
+    let fixture = SandboxFixture::new("memory-budget");
+    let task_cgroup = fixture.create_task_cgroup(
+        CgroupResourceBudget::new(Duration::from_secs(5), 32 * MEBIBYTE)
+            .expect("configure memory budget"),
+    );
+    let cgroup_directory = task_cgroup.directory().to_owned();
+    let mut handler = fixture
+        .sandbox_builder(
+            &[
+                "dd",
+                "if=/dev/zero",
+                "of=/tmp/memory-fill",
+                "bs=1048576",
+                "count=256",
+            ],
+            TEST_TIMEOUT,
+        )
+        .task_cgroup(&task_cgroup, cgroup_launcher())
+        .build()
+        .expect("build cgroup-controlled handler");
+
+    assert!(matches!(
+        handler.run_checked(Vec::new()),
+        Err(ProcessAdapterError::ResourceLimitExceeded)
+    ));
+
+    drop(handler);
+    task_cgroup.finish().expect("remove memory-limited cgroup");
+    assert!(!cgroup_directory.exists());
+}
+
+#[test]
+#[ignore = "requires Linux Bubblewrap, static BusyBox, and a delegated cgroup v2 subtree"]
+fn linux_sandbox_rejects_mismatched_or_reused_task_cgroup() {
+    let fixture = SandboxFixture::new("cgroup-identity");
+    let root = env::var_os("AIOS_CGROUP_ROOT")
+        .map(PathBuf::from)
+        .expect("delegated cgroup root must be configured");
+    let manager = CgroupV2Manager::new(root).expect("open delegated cgroup v2 root");
+    let budget = CgroupResourceBudget::new(Duration::from_secs(1), 64 * MEBIBYTE)
+        .expect("configure resource budget");
+    let other_task = TaskId::new();
+    let task_cgroup = manager
+        .create(other_task, budget)
+        .expect("create mismatched Task cgroup");
+
+    assert!(matches!(
+        fixture
+            .sandbox_builder(&["true"], TEST_TIMEOUT)
+            .task_cgroup(&task_cgroup, cgroup_launcher())
+            .build(),
+        Err(ProcessAdapterError::InvalidResourceControl)
+    ));
+    assert!(matches!(
+        manager.create(other_task, budget),
+        Err(ProcessAdapterError::InvalidResourceControl)
+    ));
+
+    task_cgroup.finish().expect("remove mismatched Task cgroup");
 }
 
 fn verify_busybox_wget_can_reach_host(fixture: &SandboxFixture) {
