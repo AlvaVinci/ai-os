@@ -8,6 +8,8 @@ Experimental child-process Tool handlers with two explicit execution modes:
 - `aios-rootfs-build` creates a sealed minimal BusyBox rootfs and prints its canonical SHA-256 digest;
 - `VerifiedRootFilesystem` verifies that tree against a digest pinned by trusted configuration;
 - `TaskScratchManager` allocates fresh Task-ID-scoped scratch beneath a trusted owner-only root;
+- `CgroupV2Manager` allocates Task-ID-scoped CPU-time and resident-memory boundaries beneath a delegated Linux cgroup v2 root;
+- `aios-cgroup-launch` moves its trusted process into that Task cgroup before replacing itself with Bubblewrap;
 - `BubblewrapProcessToolBuilder` starts a deny-network Linux sandbox with a prepared read-only root filesystem and one writable Task scratch directory.
 
 The Bubblewrap path is an isolation foundation, not complete operating-system Capability enforcement.
@@ -40,6 +42,8 @@ The expected digest must be reviewed and pinned in trusted deployment configurat
 
 Trusted startup code is also responsible for creating an existing absolute scratch root with owner-only permissions. `TaskScratchManager` rejects symlink roots, insecure permissions, root replacement, and an existing Task child. It creates an empty `0700` child named from the exact `TaskId`. `BubblewrapProcessToolBuilder::new_for_verified_task` combines the verified root with that Task scratch identity.
 
+Optional resource enforcement requires a pre-provisioned delegated cgroup v2 root beneath `/sys/fs/cgroup` and an absolute installed `aios-cgroup-launch` path. The root must expose enabled `cpu` and `memory` controllers, contain no processes directly, and contain the runtime in a separate child cgroup. `CgroupV2Manager` rejects invalid topology, root replacement, missing controller files, and duplicate Task children. It creates a Task-ID-scoped child, records its device and inode, applies `memory.max`, disables swap, enables group OOM handling, and retains cumulative CPU accounting. The Task cgroup and Task scratch IDs must match before the builder accepts them. The adapter rechecks cgroup identity and memory controls while running; the builder canonicalizes the launcher and rechecks its executable identity before every run.
+
 Neither the root filesystem nor scratch root may contain daemon or approval sockets, event databases, host credentials, or unrelated user data. Scratch cleanup is deliberately not automatic: the runtime must first stop and reap the Task's process tree, then use a separately reviewed cleanup path. Dropping `TaskScratch` never recursively deletes Tool-controlled content.
 
 Build a minimal tree from a trusted static BusyBox executable and record the printed digest outside the output directory:
@@ -56,17 +60,18 @@ Build failure may leave a partial output directory for diagnosis. The builder ne
 
 1. The Tool Catalog maps a model-visible route to fixed Capability Tool and action identifiers.
 2. `ExecutionGate` authorizes and retains the complete Tool operation.
-3. Trusted orchestration opens the rootfs with its pinned digest, allocates new scratch for the Task, and constructs the isolated handler with `new_for_verified_task`.
+3. Trusted orchestration opens the rootfs with its pinned digest, allocates new scratch and an optional cgroup for the same Task ID, and constructs the isolated handler with `new_for_verified_task`.
 4. The Process Adapter revalidates total argument bounds.
 5. The trusted argument policy evaluates the dynamic argument vector.
-6. The adapter verifies the configured executable, complete rootfs digest, and Task scratch identities.
+6. The adapter verifies the configured executable, complete rootfs digest, Task scratch, and optional Task cgroup identities.
 7. The direct mode starts the executable with fixed and dynamic argument arrays. The isolated mode starts the fixed Bubblewrap executable with a deterministic sandbox plan, followed by the exact executable and argument array.
-8. The child receives an otherwise empty environment and null standard streams.
-9. The adapter waits for successful exit or kills and reaps its direct child after the configured timeout.
+8. For cgroup execution, the fixed trusted launcher writes its own PID to `cgroup.procs` and replaces itself with Bubblewrap. Bubblewrap and every Tool descendant therefore begin inside the Task boundary.
+9. The child receives an otherwise empty environment and null standard streams.
+10. The adapter monitors cumulative cgroup CPU time, memory-limit events, and wall time. A resource ceiling kills the complete cgroup; the legacy direct path kills and reaps its direct child after timeout.
 
 No step invokes a shell, interprets argument text, or searches `PATH` for the executable. Dynamic arguments such as shell metacharacters remain literal strings.
 
-The handler timeout is fixed trusted configuration. It does not yet derive from or enforce the Task wall-time budget.
+The handler timeout and `CgroupResourceBudget` are fixed trusted configuration. They do not yet derive from the stable Task Budget, emit a terminal resource Event, or map the adapter's `ResourceLimitExceeded` category to `BUDGET_EXCEEDED`. This increment is therefore kernel-boundary evidence, not DOD-005 completion.
 
 ## Linux Bubblewrap boundary
 
@@ -79,6 +84,8 @@ The isolated launch plan always:
 - creates private `/proc`, `/dev`, and in-memory `/tmp` mounts;
 - creates a new terminal session and requests child termination when the launcher or its parent dies;
 - preserves no additional file descriptors and never adds `--share-net`.
+
+When Task cgroup control is configured, the adapter starts only the fixed `aios-cgroup-launch` helper. The helper joins the Task cgroup and then replaces itself with the fixed Bubblewrap executable. All namespace descendants inherit the same cumulative CPU and memory boundary, and no extra synchronization descriptor is preserved. Resource or wall-time termination uses `cgroup.kill`.
 
 Namespace or mount setup failure is an execution failure. The adapter never falls back to direct execution. The builder returns `UnsupportedPlatform` outside Linux.
 
@@ -95,16 +102,20 @@ The `linux_bubblewrap` integration suite starts the real Bubblewrap executable w
 - a synchronized background descendant cannot survive initial-process exit or Adapter timeout;
 - a host TCP listener reachable by the same BusyBox executable in direct mode is unreachable from the sandbox network namespace;
 - an in-place rootfs content change after handler construction is rejected before spawn.
+- CPU-bound execution stops at the cumulative Task cgroup CPU-time ceiling;
+- memory-backed `/tmp` growth stops at the Task cgroup resident-memory ceiling;
+- explicitly finished Task cgroups are empty and removable.
 
-These tests are ignored by the default test command because they require Linux, Bubblewrap 0.8.0 or newer with `--disable-userns`, static BusyBox, and enabled unprivileged user namespaces. The pinned Ubuntu 24.04 workflow verifies the required Bubblewrap option and loads a path-scoped AppArmor profile for `/usr/bin/bwrap`; it does not disable the system-wide unprivileged user namespace restriction. The workflow then runs the tests explicitly:
+These tests are ignored by the default test command because they require Linux, Bubblewrap 0.8.0 or newer with `--disable-userns`, static BusyBox, enabled unprivileged user namespaces, and a delegated cgroup v2 subtree. The pinned Ubuntu 24.04 workflow verifies the required Bubblewrap option, loads a path-scoped AppArmor profile for `/usr/bin/bwrap`, and runs the test process inside a dedicated delegated cgroup subtree. It does not disable the system-wide unprivileged user namespace restriction. The workflow then runs the tests explicitly:
 
 ```bash
 AIOS_BWRAP_PATH=/usr/bin/bwrap \
 AIOS_BUSYBOX_PATH=/usr/bin/busybox \
+AIOS_CGROUP_ROOT=/sys/fs/cgroup/aios-ci \
 cargo test -p aios-adapter-process --test linux_bubblewrap --locked -- --ignored
 ```
 
-Passing this suite is evidence for the current content-addressed rootfs, Task scratch, and deny-network launch boundary only. It does not prove OS-backed rootfs immutability or verify Capability-derived mounts, cgroup budgets, seccomp, destination-scoped networking, or the future approval API.
+Passing this suite is evidence for the current content-addressed rootfs, Task scratch, deny-network launch, and adapter-level cgroup resource boundary. It does not prove OS-backed rootfs immutability or verify Task Budget/Event integration, Capability-derived mounts, seccomp, destination-scoped networking, or the future approval API.
 
 ## Bounds
 
@@ -121,6 +132,8 @@ Passing this suite is evidence for the current content-addressed rootfs, Task sc
 | Rootfs entries | 4,096 |
 | Bytes per rootfs file | 268,435,456 |
 | Total rootfs file bytes | 536,870,912 |
+| Cgroup cumulative CPU time | Nonzero, 1 hour maximum |
+| Cgroup resident memory | Nonzero bytes; no adapter maximum |
 
 Argument and environment values containing NUL are rejected. Environment names use portable ASCII identifier syntax. Duplicate names are rejected. Errors expose stable categories without executable, directory, argument, environment, or exit details.
 
@@ -149,7 +162,8 @@ The Bubblewrap mode narrows filesystem visibility, denies host network access, c
 
 - derive the root filesystem or additional mounts from the current Task's Filesystem Capability;
 - provide approved destination-scoped network access;
-- enforce CPU or memory budgets through cgroups;
+- derive cgroup CPU, memory, or wall-time limits from the current Task Budget or record a `BUDGET_EXCEEDED` Event;
+- enforce process-count, disk, GPU, VRAM, power, or thermal budgets;
 - install a seccomp policy or descriptor-bound file access;
 - place the rootfs on an OS-enforced immutable backing store such as fs-verity or a read-only image;
 - eliminate host-side executable and mount time-of-check/time-of-use races;
@@ -161,4 +175,4 @@ Executables registered in direct mode remain trusted. Argument policies in both 
 
 ## Next enforcement milestone
 
-With a content-addressed sealed minimal rootfs and fresh Task scratch connected to the real Linux boundary suite, next add cgroup CPU/memory budgets and a seccomp policy. OS-backed rootfs immutability, descriptor-bound Capability mounts, and destination-scoped network brokering remain required before release claims. See [ADR-0006](adr/0006-bubblewrap-process-isolation.md), [ADR-0007](adr/0007-task-scoped-scratch.md), and [ADR-0008](adr/0008-content-addressed-rootfs.md).
+With adapter-level cgroup CPU/memory enforcement connected to the Linux boundary suite, next install a reviewed seccomp policy. Task Budget/Event integration, stale-cgroup recovery, OS-backed rootfs immutability, descriptor-bound Capability mounts, and destination-scoped network brokering remain required before release claims. See [ADR-0006](adr/0006-bubblewrap-process-isolation.md), [ADR-0007](adr/0007-task-scoped-scratch.md), [ADR-0008](adr/0008-content-addressed-rootfs.md), and [ADR-0009](adr/0009-task-cgroup-v2-resource-boundary.md).

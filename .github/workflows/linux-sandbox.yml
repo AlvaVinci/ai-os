@@ -42,6 +42,16 @@ jobs:
             -- \
             /usr/bin/true
 
+      - name: Prepare delegated cgroup v2 subtree
+        shell: bash
+        run: |
+          test "$(stat --file-system --format=%T /sys/fs/cgroup)" = cgroup2fs
+          echo '+cpu +memory' | sudo tee /sys/fs/cgroup/cgroup.subtree_control >/dev/null
+          sudo mkdir /sys/fs/cgroup/aios-ci
+          echo '+cpu +memory' | sudo tee /sys/fs/cgroup/aios-ci/cgroup.subtree_control >/dev/null
+          sudo mkdir /sys/fs/cgroup/aios-ci/runtime
+          sudo chown --recursive "$(id -u):$(id -g)" /sys/fs/cgroup/aios-ci
+
       - name: Install pinned Rust toolchain
         run: rustup toolchain install 1.97.1 --profile minimal --component clippy,rustfmt
 
@@ -55,7 +65,18 @@ jobs:
         env:
           AIOS_BWRAP_PATH: /usr/bin/bwrap
           AIOS_BUSYBOX_PATH: /usr/bin/busybox
-        run: cargo test -p aios-adapter-process --test linux_bubblewrap --locked -- --ignored
+          AIOS_CGROUP_ROOT: /sys/fs/cgroup/aios-ci
+        shell: bash
+        run: |
+          sudo --preserve-env=PATH,AIOS_BWRAP_PATH,AIOS_BUSYBOX_PATH,AIOS_CGROUP_ROOT \
+            bash -c '
+              echo "$BASHPID" > "$AIOS_CGROUP_ROOT/runtime/cgroup.procs"
+              exec setpriv \
+                --reuid="$(id -u "$SUDO_USER")" \
+                --regid="$(id -g "$SUDO_USER")" \
+                --init-groups \
+                cargo test -p aios-adapter-process --test linux_bubblewrap --locked -- --ignored
+            '
 
       - name: Run Clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings

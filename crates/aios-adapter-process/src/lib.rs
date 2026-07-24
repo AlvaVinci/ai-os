@@ -6,8 +6,10 @@
 //!
 //! Linux callers may opt into an experimental Bubblewrap launcher with an explicit read-only
 //! root filesystem, a separate writable scratch directory, namespace isolation, and no network.
-//! This crate is still not complete operating-system Capability enforcement: cgroups, seccomp,
-//! descriptor-bound filesystem access, and Capability-derived mounts remain future work.
+//! A delegated cgroup v2 subtree may additionally enforce cumulative CPU-time and resident-memory
+//! ceilings. This crate is still not complete operating-system Capability enforcement: Task
+//! Budget wiring, seccomp, descriptor-bound filesystem access, and Capability-derived mounts
+//! remain future work.
 
 use std::collections::BTreeMap;
 use std::error::Error;
@@ -21,8 +23,10 @@ use std::time::{Duration, Instant};
 use aios_adapter_tool::{ToolFailure, ToolHandler, ToolOutput};
 use aios_runtime::TaskId;
 
+mod cgroup;
 mod rootfs;
 
+pub use cgroup::{CgroupResourceBudget, CgroupV2Manager, TaskCgroup};
 pub use rootfs::{
     MAX_ROOT_FILESYSTEM_ENTRIES, MAX_ROOT_FILESYSTEM_FILE_BYTES, MAX_ROOT_FILESYSTEM_TOTAL_BYTES,
     RootFilesystemDigest, VerifiedRootFilesystem, build_minimal_root_filesystem,
@@ -158,6 +162,8 @@ pub enum ProcessAdapterError {
     TimedOut,
     ExitFailed,
     OutputFailed,
+    InvalidResourceControl,
+    ResourceLimitExceeded,
 }
 
 impl Display for ProcessAdapterError {
@@ -174,6 +180,8 @@ impl Display for ProcessAdapterError {
             Self::TimedOut => "process timed out",
             Self::ExitFailed => "process exited unsuccessfully",
             Self::OutputFailed => "process output construction failed",
+            Self::InvalidResourceControl => "invalid Process Adapter resource control",
+            Self::ResourceLimitExceeded => "process resource limit exceeded",
         };
         formatter.write_str(message)
     }
@@ -205,7 +213,10 @@ pub struct BubblewrapProcessToolBuilder {
     sandbox_executable: PathBuf,
     scratch_directory: PathBuf,
     task_scratch_identity: Option<DirectoryIdentity>,
+    task_id: Option<TaskId>,
     verified_root_state: Option<rootfs::VerifiedRootFilesystemState>,
+    task_cgroup_state: Option<cgroup::TaskCgroupState>,
+    cgroup_launcher: Option<PathBuf>,
     fixed_arguments: Vec<String>,
     environment: Vec<(String, String)>,
     timeout: Duration,
@@ -229,7 +240,10 @@ impl BubblewrapProcessToolBuilder {
             sandbox_executable: sandbox_executable.into(),
             scratch_directory: scratch_directory.into(),
             task_scratch_identity: None,
+            task_id: None,
             verified_root_state: None,
+            task_cgroup_state: None,
+            cgroup_launcher: None,
             fixed_arguments: Vec::new(),
             environment: Vec::new(),
             timeout: DEFAULT_TIMEOUT,
@@ -256,6 +270,7 @@ impl BubblewrapProcessToolBuilder {
             argument_policy,
         );
         builder.task_scratch_identity = Some(task_scratch.directory_identity);
+        builder.task_id = Some(task_scratch.task_id);
         builder
     }
 
@@ -299,12 +314,33 @@ impl BubblewrapProcessToolBuilder {
         self
     }
 
+    /// Applies a pre-created Task cgroup through one trusted self-placing launcher.
+    #[must_use]
+    pub fn task_cgroup(
+        mut self,
+        task_cgroup: &TaskCgroup,
+        cgroup_launcher: impl Into<PathBuf>,
+    ) -> Self {
+        self.task_cgroup_state = Some(task_cgroup.state());
+        self.cgroup_launcher = Some(cgroup_launcher.into());
+        self
+    }
+
     pub fn build(self) -> Result<ProcessToolHandler, ProcessAdapterError> {
         if !cfg!(target_os = "linux") {
             return Err(ProcessAdapterError::UnsupportedPlatform);
         }
         if self.timeout.is_zero() || self.timeout > MAX_TIMEOUT {
             return Err(ProcessAdapterError::InvalidConfig);
+        }
+        if let Some(task_cgroup) = &self.task_cgroup_state {
+            if self.task_id != Some(task_cgroup.task_id()) {
+                return Err(ProcessAdapterError::InvalidResourceControl);
+            }
+            task_cgroup.validate()?;
+        }
+        if self.task_cgroup_state.is_some() != self.cgroup_launcher.is_some() {
+            return Err(ProcessAdapterError::InvalidResourceControl);
         }
         validate_arguments(&self.fixed_arguments, &[])?;
 
@@ -323,6 +359,21 @@ impl BubblewrapProcessToolBuilder {
         let (executable, executable_identity, sandbox_executable) =
             canonical_sandbox_executable(&root_filesystem, &self.sandbox_executable)?;
         let environment = validate_environment(self.environment)?;
+        let cgroup_launch = match (self.task_cgroup_state, self.cgroup_launcher) {
+            (Some(task_cgroup), Some(launcher)) => {
+                let launcher = canonical_executable(&launcher)
+                    .map_err(|_| ProcessAdapterError::InvalidResourceControl)?;
+                let launcher_identity = ExecutableIdentity::read(&launcher)
+                    .map_err(|_| ProcessAdapterError::InvalidResourceControl)?;
+                Some(Box::new(CgroupLaunch {
+                    launcher,
+                    launcher_identity,
+                    task_cgroup,
+                }))
+            }
+            (None, None) => None,
+            _ => return Err(ProcessAdapterError::InvalidResourceControl),
+        };
 
         Ok(ProcessToolHandler {
             executable,
@@ -339,6 +390,7 @@ impl BubblewrapProcessToolBuilder {
                 root_filesystem,
                 verified_root_state: self.verified_root_state,
                 sandbox_executable,
+                cgroup_launch,
             },
         })
     }
@@ -431,7 +483,14 @@ enum ProcessLauncher {
         root_filesystem: PathBuf,
         verified_root_state: Option<rootfs::VerifiedRootFilesystemState>,
         sandbox_executable: PathBuf,
+        cgroup_launch: Option<Box<CgroupLaunch>>,
     },
+}
+
+struct CgroupLaunch {
+    launcher: PathBuf,
+    launcher_identity: ExecutableIdentity,
+    task_cgroup: cgroup::TaskCgroupState,
 }
 
 impl ProcessToolHandler {
@@ -466,6 +525,7 @@ impl ProcessToolHandler {
                 root_filesystem,
                 verified_root_state,
                 sandbox_executable,
+                cgroup_launch,
             } => {
                 if ExecutableIdentity::read(bubblewrap)? != *bubblewrap_identity {
                     return Err(ProcessAdapterError::ExecutableChanged);
@@ -473,7 +533,24 @@ impl ProcessToolHandler {
                 if let Some(state) = verified_root_state {
                     rootfs::validate_verified_root_filesystem(root_filesystem, *state)?;
                 }
-                let mut command = Command::new(bubblewrap);
+                if let Some(cgroup_launch) = cgroup_launch
+                    && ExecutableIdentity::read(&cgroup_launch.launcher)?
+                        != cgroup_launch.launcher_identity
+                {
+                    return Err(ProcessAdapterError::ExecutableChanged);
+                }
+                let mut command = if let Some(cgroup_launch) = cgroup_launch {
+                    let (process_file, device, inode) = cgroup_launch.task_cgroup.launch_identity();
+                    let mut command = Command::new(&cgroup_launch.launcher);
+                    command
+                        .arg(process_file)
+                        .arg(device.to_string())
+                        .arg(inode.to_string())
+                        .arg(bubblewrap);
+                    command
+                } else {
+                    Command::new(bubblewrap)
+                };
                 command
                     .args(bubblewrap_arguments(
                         root_filesystem,
@@ -492,6 +569,17 @@ impl ProcessToolHandler {
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
+        let task_cgroup = match &self.launcher {
+            ProcessLauncher::Bubblewrap { cgroup_launch, .. } => cgroup_launch
+                .as_ref()
+                .map(|launch| launch.task_cgroup.clone()),
+            ProcessLauncher::Direct => None,
+        };
+        if let Some(task_cgroup) = &task_cgroup
+            && task_cgroup.limit_reached()?
+        {
+            return Err(ProcessAdapterError::ResourceLimitExceeded);
+        }
 
         #[cfg(unix)]
         {
@@ -507,21 +595,57 @@ impl ProcessToolHandler {
             .map_err(|_| ProcessAdapterError::SpawnFailed)?;
 
         loop {
-            match child
-                .try_wait()
-                .map_err(|_| ProcessAdapterError::WaitFailed)?
-            {
+            let status = match child.try_wait() {
+                Ok(status) => status,
+                Err(_) => {
+                    if let Some(task_cgroup) = &task_cgroup {
+                        let _result = terminate_cgroup_child(task_cgroup, &mut child);
+                    } else {
+                        let _result = child.kill();
+                        let _result = child.wait();
+                    }
+                    return Err(ProcessAdapterError::WaitFailed);
+                }
+            };
+            match status {
                 Some(status) if status.success() => {
+                    if let Some(task_cgroup) = &task_cgroup
+                        && task_cgroup.limit_reached()?
+                    {
+                        return Err(ProcessAdapterError::ResourceLimitExceeded);
+                    }
                     return ToolOutput::from_bytes(Vec::new())
                         .map_err(|_| ProcessAdapterError::OutputFailed);
                 }
-                Some(_) => return Err(ProcessAdapterError::ExitFailed),
+                Some(_) => {
+                    if let Some(task_cgroup) = &task_cgroup
+                        && task_cgroup.limit_reached()?
+                    {
+                        return Err(ProcessAdapterError::ResourceLimitExceeded);
+                    }
+                    return Err(ProcessAdapterError::ExitFailed);
+                }
                 None => {}
             }
 
             let now = Instant::now();
+            if let Some(task_cgroup) = &task_cgroup {
+                match task_cgroup.limit_reached() {
+                    Ok(true) => {
+                        terminate_cgroup_child(task_cgroup, &mut child)?;
+                        return Err(ProcessAdapterError::ResourceLimitExceeded);
+                    }
+                    Ok(false) => {}
+                    Err(error) => {
+                        terminate_cgroup_child(task_cgroup, &mut child)?;
+                        return Err(error);
+                    }
+                }
+            }
             if now >= deadline {
-                if child.kill().is_ok() {
+                if let Some(task_cgroup) = &task_cgroup {
+                    terminate_cgroup_child(task_cgroup, &mut child)?;
+                } else if child.kill().is_ok() {
                     child.wait().map_err(|_| ProcessAdapterError::WaitFailed)?;
                 } else if child
                     .try_wait()
@@ -535,6 +659,16 @@ impl ProcessToolHandler {
             thread::sleep(WAIT_POLL_INTERVAL.min(deadline.saturating_duration_since(now)));
         }
     }
+}
+
+fn terminate_cgroup_child(
+    task_cgroup: &cgroup::TaskCgroupState,
+    child: &mut std::process::Child,
+) -> Result<(), ProcessAdapterError> {
+    let termination = task_cgroup.terminate();
+    let _result = child.kill();
+    child.wait().map_err(|_| ProcessAdapterError::WaitFailed)?;
+    termination
 }
 
 impl ToolHandler for ProcessToolHandler {
@@ -564,6 +698,10 @@ impl DirectoryIdentity {
             inode: metadata.ino(),
         })
     }
+
+    fn raw(self) -> (u64, u64) {
+        (self.device, self.inode)
+    }
 }
 
 #[cfg(not(unix))]
@@ -574,6 +712,10 @@ struct DirectoryIdentity;
 impl DirectoryIdentity {
     fn read(_path: &Path) -> Result<Self, ProcessAdapterError> {
         Err(ProcessAdapterError::UnsupportedPlatform)
+    }
+
+    fn raw(self) -> (u64, u64) {
+        (0, 0)
     }
 }
 
