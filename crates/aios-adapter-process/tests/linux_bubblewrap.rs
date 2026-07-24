@@ -12,8 +12,8 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use aios_adapter_process::{
-    BubblewrapProcessToolBuilder, ProcessAdapterError, ProcessToolBuilder, TaskScratch,
-    TaskScratchManager,
+    BubblewrapProcessToolBuilder, ProcessAdapterError, ProcessToolBuilder, ProcessToolHandler,
+    TaskScratch, TaskScratchManager, VerifiedRootFilesystem, build_minimal_root_filesystem,
 };
 use aios_runtime::TaskId;
 
@@ -28,7 +28,7 @@ struct SandboxFixture {
     base: PathBuf,
     bubblewrap: PathBuf,
     busybox: PathBuf,
-    root_filesystem: PathBuf,
+    root_filesystem: VerifiedRootFilesystem,
     task_scratch: TaskScratch,
     host_directory: PathBuf,
 }
@@ -52,16 +52,7 @@ impl SandboxFixture {
         let root_filesystem = base.join("rootfs");
         let scratch_root = base.join("tasks");
         let host_directory = base.join("host-only");
-        for directory in [
-            root_filesystem.join("bin"),
-            root_filesystem.join("proc"),
-            root_filesystem.join("dev"),
-            root_filesystem.join("tmp"),
-            root_filesystem.join("workspace"),
-            host_directory.clone(),
-        ] {
-            fs::create_dir_all(directory).expect("create sandbox fixture directory");
-        }
+        fs::create_dir(&host_directory).expect("create host-only fixture directory");
         directory_builder
             .create(&scratch_root)
             .expect("create Task scratch root");
@@ -72,10 +63,10 @@ impl SandboxFixture {
 
         let bubblewrap = required_executable("AIOS_BWRAP_PATH");
         let busybox = required_executable("AIOS_BUSYBOX_PATH");
-        let sandbox_busybox = root_filesystem.join("bin/busybox");
-        fs::copy(&busybox, &sandbox_busybox).expect("copy static BusyBox into rootfs");
-        fs::set_permissions(&sandbox_busybox, fs::Permissions::from_mode(0o755))
-            .expect("make sandbox BusyBox executable");
+        let root_digest = build_minimal_root_filesystem(&busybox, &root_filesystem)
+            .expect("build sealed minimal rootfs");
+        let root_filesystem = VerifiedRootFilesystem::open(&root_filesystem, root_digest)
+            .expect("verify sealed rootfs");
 
         Self {
             base,
@@ -101,7 +92,13 @@ impl SandboxFixture {
         dynamic_arguments: Vec<String>,
         timeout: Duration,
     ) -> Result<(), ProcessAdapterError> {
-        let mut handler = BubblewrapProcessToolBuilder::new_for_task(
+        let mut handler = self.sandbox_handler(fixed_arguments, timeout);
+
+        handler.run_checked(dynamic_arguments).map(|_| ())
+    }
+
+    fn sandbox_handler(&self, fixed_arguments: &[&str], timeout: Duration) -> ProcessToolHandler {
+        BubblewrapProcessToolBuilder::new_for_verified_task(
             &self.bubblewrap,
             &self.root_filesystem,
             "/bin/busybox",
@@ -116,14 +113,13 @@ impl SandboxFixture {
         )
         .timeout(timeout)
         .build()
-        .expect("build Bubblewrap handler");
-
-        handler.run_checked(dynamic_arguments).map(|_| ())
+        .expect("build Bubblewrap handler")
     }
 }
 
 impl Drop for SandboxFixture {
     fn drop(&mut self) {
+        make_tree_writable(&self.base);
         let _result = fs::remove_dir_all(&self.base);
     }
 }
@@ -153,6 +149,7 @@ fn linux_sandbox_enforces_filesystem_socket_and_descriptor_boundaries() {
     assert!(
         !fixture
             .root_filesystem
+            .directory()
             .join("root-write-must-fail")
             .exists()
     );
@@ -264,6 +261,29 @@ fn linux_sandbox_blocks_host_network() {
     assert!(matches!(listener.accept(), Err(error) if error.kind() == io::ErrorKind::WouldBlock));
 }
 
+#[test]
+#[ignore = "requires Linux Bubblewrap and static BusyBox"]
+fn linux_sandbox_rejects_rootfs_content_change_before_spawn() {
+    let fixture = SandboxFixture::new("rootfs-tamper");
+    let mut handler = fixture.sandbox_handler(&["true"], TEST_TIMEOUT);
+    let sandbox_busybox = fixture.root_filesystem.directory().join("bin/busybox");
+    fs::set_permissions(&sandbox_busybox, fs::Permissions::from_mode(0o755))
+        .expect("make sandbox BusyBox writable");
+    OpenOptions::new()
+        .write(true)
+        .open(&sandbox_busybox)
+        .expect("open sandbox BusyBox")
+        .write_all(b"X")
+        .expect("modify sandbox BusyBox");
+    fs::set_permissions(&sandbox_busybox, fs::Permissions::from_mode(0o555))
+        .expect("reseal sandbox BusyBox");
+
+    assert!(matches!(
+        handler.run_checked(Vec::new()),
+        Err(ProcessAdapterError::InvalidSandbox)
+    ));
+}
+
 fn verify_busybox_wget_can_reach_host(fixture: &SandboxFixture) {
     let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind direct TCP listener");
     let address = listener.local_addr().expect("read direct listener address");
@@ -338,4 +358,18 @@ fn verify_busybox_wget_can_reach_host(fixture: &SandboxFixture) {
 
 fn path_string(path: &Path) -> String {
     path.to_str().expect("test path must be UTF-8").to_owned()
+}
+
+fn make_tree_writable(path: &Path) {
+    let metadata = fs::symlink_metadata(path).expect("read fixture entry");
+    if metadata.file_type().is_symlink() {
+        return;
+    }
+    let mode = metadata.permissions().mode() & 0o777 | 0o200;
+    fs::set_permissions(path, fs::Permissions::from_mode(mode)).expect("open fixture entry");
+    if metadata.is_dir() {
+        for entry in fs::read_dir(path).expect("read fixture directory") {
+            make_tree_writable(&entry.expect("read fixture entry").path());
+        }
+    }
 }

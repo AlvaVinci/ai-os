@@ -13,6 +13,7 @@ workspace = true
 [dependencies]
 aios-adapter-tool = { path = "../aios-adapter-tool" }
 aios-runtime = { path = "../aios-runtime" }
+sha2.workspace = true
 
 [dev-dependencies]
 aios-core = { path = "../aios-core" }
