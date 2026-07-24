@@ -18,5 +18,6 @@ Index:
 - [ADR-0005: Stabilize the Local API from Protocol Version 4](0005-stable-local-api.md)
 - [ADR-0006: Use a rootfs-scoped Bubblewrap backend for initial Linux process isolation](0006-bubblewrap-process-isolation.md)
 - [ADR-0007: Allocate fresh Task-ID-scoped sandbox scratch](0007-task-scoped-scratch.md)
+- [ADR-0008: Verify a content-addressed sealed minimal rootfs](0008-content-addressed-rootfs.md)
 
 New ADRs should state context, decision, consequences, alternatives, and related security requirements. Existing ADRs are immutable except for status and supersession links; changed decisions receive a new record.

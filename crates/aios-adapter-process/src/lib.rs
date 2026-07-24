@@ -21,6 +21,13 @@ use std::time::{Duration, Instant};
 use aios_adapter_tool::{ToolFailure, ToolHandler, ToolOutput};
 use aios_runtime::TaskId;
 
+mod rootfs;
+
+pub use rootfs::{
+    MAX_ROOT_FILESYSTEM_ENTRIES, MAX_ROOT_FILESYSTEM_FILE_BYTES, MAX_ROOT_FILESYSTEM_TOTAL_BYTES,
+    RootFilesystemDigest, VerifiedRootFilesystem, build_minimal_root_filesystem,
+};
+
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 pub const MAX_TIMEOUT: Duration = Duration::from_secs(60 * 60);
 pub const MAX_ARGUMENTS: usize = 64;
@@ -198,6 +205,7 @@ pub struct BubblewrapProcessToolBuilder {
     sandbox_executable: PathBuf,
     scratch_directory: PathBuf,
     task_scratch_identity: Option<DirectoryIdentity>,
+    verified_root_state: Option<rootfs::VerifiedRootFilesystemState>,
     fixed_arguments: Vec<String>,
     environment: Vec<(String, String)>,
     timeout: Duration,
@@ -221,6 +229,7 @@ impl BubblewrapProcessToolBuilder {
             sandbox_executable: sandbox_executable.into(),
             scratch_directory: scratch_directory.into(),
             task_scratch_identity: None,
+            verified_root_state: None,
             fixed_arguments: Vec::new(),
             environment: Vec::new(),
             timeout: DEFAULT_TIMEOUT,
@@ -247,6 +256,28 @@ impl BubblewrapProcessToolBuilder {
             argument_policy,
         );
         builder.task_scratch_identity = Some(task_scratch.directory_identity);
+        builder
+    }
+
+    /// Creates a builder using both digest-verified rootfs and freshly allocated Task scratch.
+    pub fn new_for_verified_task<P>(
+        bubblewrap: impl Into<PathBuf>,
+        root_filesystem: &VerifiedRootFilesystem,
+        sandbox_executable: impl Into<PathBuf>,
+        task_scratch: &TaskScratch,
+        argument_policy: P,
+    ) -> Self
+    where
+        P: ProcessArgumentPolicy + 'static,
+    {
+        let mut builder = Self::new_for_task(
+            bubblewrap,
+            root_filesystem.directory(),
+            sandbox_executable,
+            task_scratch,
+            argument_policy,
+        );
+        builder.verified_root_state = Some(root_filesystem.state());
         builder
     }
 
@@ -281,6 +312,9 @@ impl BubblewrapProcessToolBuilder {
         let bubblewrap_identity = ExecutableIdentity::read(&bubblewrap)?;
         let root_filesystem = canonical_sandbox_root(&self.root_filesystem)?;
         validate_sandbox_mount_points(&root_filesystem)?;
+        if let Some(state) = self.verified_root_state {
+            rootfs::validate_verified_root_filesystem(&root_filesystem, state)?;
+        }
         let scratch_directory =
             canonical_scratch_directory(&self.scratch_directory, &root_filesystem)?;
         if let Some(identity) = self.task_scratch_identity {
@@ -303,6 +337,7 @@ impl BubblewrapProcessToolBuilder {
                 bubblewrap,
                 bubblewrap_identity,
                 root_filesystem,
+                verified_root_state: self.verified_root_state,
                 sandbox_executable,
             },
         })
@@ -394,6 +429,7 @@ enum ProcessLauncher {
         bubblewrap: PathBuf,
         bubblewrap_identity: ExecutableIdentity,
         root_filesystem: PathBuf,
+        verified_root_state: Option<rootfs::VerifiedRootFilesystemState>,
         sandbox_executable: PathBuf,
     },
 }
@@ -428,10 +464,14 @@ impl ProcessToolHandler {
                 bubblewrap,
                 bubblewrap_identity,
                 root_filesystem,
+                verified_root_state,
                 sandbox_executable,
             } => {
                 if ExecutableIdentity::read(bubblewrap)? != *bubblewrap_identity {
                     return Err(ProcessAdapterError::ExecutableChanged);
+                }
+                if let Some(state) = verified_root_state {
+                    rootfs::validate_verified_root_filesystem(root_filesystem, *state)?;
                 }
                 let mut command = Command::new(bubblewrap);
                 command

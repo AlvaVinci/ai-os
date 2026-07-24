@@ -137,9 +137,10 @@ The current adapter executes trusted in-process handlers only. Handler-specific 
 - Uses an explicit canonical working directory and never invokes a shell or searches `PATH`.
 - Applies a bounded timeout to the direct child and returns redacted failure categories.
 - Allocates fresh Task-ID-scoped scratch directories beneath a trusted owner-only root and refuses reuse or root replacement.
-- Optionally launches through an explicit Linux Bubblewrap backend with a prepared read-only root filesystem, the Task scratch mounted read-write, namespace isolation, no host network, dropped capabilities, and no preserved extra descriptors.
+- Builds a create-new minimal BusyBox rootfs, seals every entry read-only, and verifies its canonical SHA-256 identity against a digest pinned outside the tree.
+- Optionally launches through an explicit Linux Bubblewrap backend with the verified root filesystem, the Task scratch mounted read-write, namespace isolation, no host network, dropped capabilities, and no preserved extra descriptors.
 
-Direct mode remains a constrained `ToolHandler`, not a sandbox. Bubblewrap mode is an experimental deny-network isolation foundation, but its root and additional filesystem mounts are not yet derived from Task Capabilities and it does not apply cgroup budgets, seccomp, descriptor-bound filesystem access, or Linux-tested asynchronous cancellation. Process output is deliberately discarded until bounded streaming and descendant cleanup can be enforced together. See [Process adapter](process-adapter.md), [ADR-0006](adr/0006-bubblewrap-process-isolation.md), and [ADR-0007](adr/0007-task-scoped-scratch.md).
+Direct mode remains a constrained `ToolHandler`, not a sandbox. Bubblewrap mode is an experimental deny-network isolation foundation, but its root and additional filesystem mounts are not yet derived from Task Capabilities and it does not apply cgroup budgets, seccomp, descriptor-bound filesystem access, OS-backed rootfs immutability, or Linux-tested asynchronous cancellation. Process output is deliberately discarded until bounded streaming and descendant cleanup can be enforced together. See [Process adapter](process-adapter.md), [ADR-0006](adr/0006-bubblewrap-process-isolation.md), [ADR-0007](adr/0007-task-scoped-scratch.md), and [ADR-0008](adr/0008-content-addressed-rootfs.md).
 
 ### Model Router
 
