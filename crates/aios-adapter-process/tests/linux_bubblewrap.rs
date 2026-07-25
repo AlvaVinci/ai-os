@@ -201,6 +201,39 @@ fn linux_sandbox_enforces_filesystem_socket_and_descriptor_boundaries() {
 }
 
 #[test]
+#[ignore = "requires Linux x86_64, Bubblewrap, and static BusyBox"]
+fn linux_sandbox_applies_the_reviewed_seccomp_policy() {
+    let fixture = SandboxFixture::new("seccomp-policy");
+    let mut direct = ProcessToolBuilder::new(
+        &fixture.busybox,
+        fixture.task_scratch.directory(),
+        |arguments: &[String]| arguments.is_empty(),
+    )
+    .fixed_arguments(vec![
+        "linux64".to_owned(),
+        path_string(&fixture.busybox),
+        "true".to_owned(),
+    ])
+    .timeout(TEST_TIMEOUT)
+    .build()
+    .expect("build direct personality preflight");
+    direct
+        .run_checked(Vec::new())
+        .expect("host BusyBox personality probe must succeed without seccomp");
+
+    fixture
+        .run_sandbox(
+            &["grep", "-q", "^Seccomp:[[:space:]]*2$", "/proc/self/status"],
+            Vec::new(),
+        )
+        .expect("sandbox process must report seccomp filter mode");
+    assert!(matches!(
+        fixture.run_sandbox(&["linux64", "/bin/busybox", "true"], Vec::new()),
+        Err(ProcessAdapterError::ExitFailed)
+    ));
+}
+
+#[test]
 #[ignore = "requires Linux Bubblewrap and static BusyBox"]
 fn linux_sandbox_terminates_descendants_after_initial_process_exit() {
     let fixture = SandboxFixture::new("exit-descendant-cleanup");

@@ -7,9 +7,9 @@
 //! Linux callers may opt into an experimental Bubblewrap launcher with an explicit read-only
 //! root filesystem, a separate writable scratch directory, namespace isolation, and no network.
 //! A delegated cgroup v2 subtree may additionally enforce cumulative CPU-time and resident-memory
-//! ceilings. This crate is still not complete operating-system Capability enforcement: Task
-//! Budget wiring, seccomp, descriptor-bound filesystem access, and Capability-derived mounts
-//! remain future work.
+//! ceilings. The Linux x86_64 Bubblewrap path also installs a built-in sealed seccomp deny policy.
+//! This crate is still not complete operating-system Capability enforcement: Task Budget wiring,
+//! descriptor-bound filesystem access, and Capability-derived mounts remain future work.
 
 use std::collections::BTreeMap;
 use std::error::Error;
@@ -25,6 +25,7 @@ use aios_runtime::TaskId;
 
 mod cgroup;
 mod rootfs;
+mod seccomp;
 
 pub use cgroup::{CgroupResourceBudget, CgroupV2Manager, TaskCgroup};
 pub use rootfs::{
@@ -164,6 +165,7 @@ pub enum ProcessAdapterError {
     OutputFailed,
     InvalidResourceControl,
     ResourceLimitExceeded,
+    SeccompUnavailable,
 }
 
 impl Display for ProcessAdapterError {
@@ -182,6 +184,7 @@ impl Display for ProcessAdapterError {
             Self::OutputFailed => "process output construction failed",
             Self::InvalidResourceControl => "invalid Process Adapter resource control",
             Self::ResourceLimitExceeded => "process resource limit exceeded",
+            Self::SeccompUnavailable => "Process Adapter seccomp boundary unavailable",
         };
         formatter.write_str(message)
     }
@@ -330,6 +333,7 @@ impl BubblewrapProcessToolBuilder {
         if !cfg!(target_os = "linux") {
             return Err(ProcessAdapterError::UnsupportedPlatform);
         }
+        seccomp::ensure_supported_target()?;
         if self.timeout.is_zero() || self.timeout > MAX_TIMEOUT {
             return Err(ProcessAdapterError::InvalidConfig);
         }
@@ -509,6 +513,10 @@ impl ProcessToolHandler {
         if let Some(identity) = self.working_directory_identity {
             validate_task_scratch_identity(&self.working_directory, identity)?;
         }
+        let seccomp_filter = match &self.launcher {
+            ProcessLauncher::Bubblewrap { .. } => Some(seccomp::SeccompFilterFile::create()?),
+            ProcessLauncher::Direct => None,
+        };
 
         let mut command = match &self.launcher {
             ProcessLauncher::Direct => {
@@ -551,11 +559,16 @@ impl ProcessToolHandler {
                 } else {
                     Command::new(bubblewrap)
                 };
+                let seccomp_fd = seccomp_filter
+                    .as_ref()
+                    .ok_or(ProcessAdapterError::SeccompUnavailable)?
+                    .raw_fd();
                 command
                     .args(bubblewrap_arguments(
                         root_filesystem,
                         &self.working_directory,
                         sandbox_executable,
+                        seccomp_fd,
                     ))
                     .args(&self.fixed_arguments)
                     .args(&dynamic_arguments)
@@ -940,13 +953,18 @@ fn bubblewrap_arguments(
     root_filesystem: &Path,
     scratch_directory: &Path,
     sandbox_executable: &Path,
+    seccomp_fd: i32,
 ) -> Vec<std::ffi::OsString> {
-    [
+    let mut arguments = vec![
         std::ffi::OsString::from("--unshare-all"),
         std::ffi::OsString::from("--unshare-user"),
         std::ffi::OsString::from("--disable-userns"),
         std::ffi::OsString::from("--die-with-parent"),
         std::ffi::OsString::from("--new-session"),
+        std::ffi::OsString::from("--seccomp"),
+        std::ffi::OsString::from(seccomp_fd.to_string()),
+    ];
+    arguments.extend([
         std::ffi::OsString::from("--cap-drop"),
         std::ffi::OsString::from("ALL"),
         std::ffi::OsString::from("--ro-bind"),
@@ -965,8 +983,8 @@ fn bubblewrap_arguments(
         std::ffi::OsString::from("/workspace"),
         std::ffi::OsString::from("--"),
         sandbox_executable.as_os_str().to_owned(),
-    ]
-    .into()
+    ]);
+    arguments
 }
 
 fn validate_arguments(fixed: &[String], dynamic: &[String]) -> Result<(), ProcessAdapterError> {
@@ -1083,6 +1101,7 @@ mod tests {
             Path::new("/opt/aios/rootfs"),
             Path::new("/var/lib/aios/tasks/task-1"),
             Path::new("/usr/bin/tool"),
+            9,
         );
         let arguments: Vec<String> = arguments
             .into_iter()
@@ -1097,6 +1116,8 @@ mod tests {
                 "--disable-userns",
                 "--die-with-parent",
                 "--new-session",
+                "--seccomp",
+                "9",
                 "--cap-drop",
                 "ALL",
                 "--ro-bind",

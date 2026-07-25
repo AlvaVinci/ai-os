@@ -10,6 +10,7 @@ Experimental child-process Tool handlers with two explicit execution modes:
 - `TaskScratchManager` allocates fresh Task-ID-scoped scratch beneath a trusted owner-only root;
 - `CgroupV2Manager` allocates Task-ID-scoped CPU-time and resident-memory boundaries beneath a delegated Linux cgroup v2 root;
 - `aios-cgroup-launch` moves its trusted process into that Task cgroup before replacing itself with Bubblewrap;
+- a built-in sealed seccomp policy removes high-risk Linux x86_64 kernel interfaces from every isolated Tool process;
 - `BubblewrapProcessToolBuilder` starts a deny-network Linux sandbox with a prepared read-only root filesystem and one writable Task scratch directory.
 
 The Bubblewrap path is an isolation foundation, not complete operating-system Capability enforcement.
@@ -31,6 +32,7 @@ The handler is intended to be consumed by `ToolAdapterBuilder`. The resulting `T
 
 The Linux isolated builder additionally requires:
 
+- a Linux x86_64 host;
 - an absolute Bubblewrap executable path;
 - a prepared root filesystem that is not the host root;
 - an absolute executable path inside that root filesystem;
@@ -64,10 +66,12 @@ Build failure may leave a partial output directory for diagnosis. The builder ne
 4. The Process Adapter revalidates total argument bounds.
 5. The trusted argument policy evaluates the dynamic argument vector.
 6. The adapter verifies the configured executable, complete rootfs digest, Task scratch, and optional Task cgroup identities.
-7. The direct mode starts the executable with fixed and dynamic argument arrays. The isolated mode starts the fixed Bubblewrap executable with a deterministic sandbox plan, followed by the exact executable and argument array.
-8. For cgroup execution, the fixed trusted launcher writes its own PID to `cgroup.procs` and replaces itself with Bubblewrap. Bubblewrap and every Tool descendant therefore begin inside the Task boundary.
-9. The child receives an otherwise empty environment and null standard streams.
-10. The adapter monitors cumulative cgroup CPU time, memory-limit events, and wall time. A resource ceiling kills the complete cgroup; the legacy direct path kills and reaps its direct child after timeout.
+7. For isolated execution, the adapter creates a fresh sealed anonymous file containing the built-in seccomp policy and exposes only that read-only descriptor across exec.
+8. The direct mode starts the executable with fixed and dynamic argument arrays. The isolated mode starts the fixed Bubblewrap executable with a deterministic sandbox plan, followed by the exact executable and argument array.
+9. For cgroup execution, the fixed trusted launcher writes its own PID to `cgroup.procs` and replaces itself with Bubblewrap. Bubblewrap and every Tool descendant therefore begin inside the Task boundary.
+10. Bubblewrap installs the seccomp policy immediately before the Tool starts and closes the policy descriptor.
+11. The child receives an otherwise empty environment and null standard streams.
+12. The adapter monitors cumulative cgroup CPU time, memory-limit events, and wall time. A resource ceiling kills the complete cgroup; the legacy direct path kills and reaps its direct child after timeout.
 
 No step invokes a shell, interprets argument text, or searches `PATH` for the executable. Dynamic arguments such as shell metacharacters remain literal strings.
 
@@ -83,7 +87,10 @@ The isolated launch plan always:
 - mounts only the declared scratch directory read-write at `/workspace`;
 - creates private `/proc`, `/dev`, and in-memory `/tmp` mounts;
 - creates a new terminal session and requests child termination when the launcher or its parent dies;
-- preserves no additional file descriptors and never adds `--share-net`.
+- passes one sealed read-only seccomp policy descriptor to Bubblewrap, which consumes and closes it before Tool execution;
+- preserves no other additional file descriptors and never adds `--share-net`.
+
+The mandatory policy validates the x86_64 audit architecture, rejects the x32 syscall range, rejects syscall numbers newer than the reviewed Linux table, and terminates a reviewed set of mount, module, system-time, swap, reboot, kernel-log, keyring, BPF, performance, cross-process memory, namespace, `io_uring`, and userfault operations. It is a deny policy rather than a complete allowlist. Failure to construct or pass it returns `SeccompUnavailable`; there is no unfiltered fallback.
 
 When Task cgroup control is configured, the adapter starts only the fixed `aios-cgroup-launch` helper. The helper joins the Task cgroup and then replaces itself with the fixed Bubblewrap executable. All namespace descendants inherit the same cumulative CPU and memory boundary, and no extra synchronization descriptor is preserved. Resource or wall-time termination uses `cgroup.kill`.
 
@@ -102,11 +109,12 @@ The `linux_bubblewrap` integration suite starts the real Bubblewrap executable w
 - a synchronized background descendant cannot survive initial-process exit or Adapter timeout;
 - a host TCP listener reachable by the same BusyBox executable in direct mode is unreachable from the sandbox network namespace;
 - an in-place rootfs content change after handler construction is rejected before spawn.
+- the Tool reports seccomp filter mode and a host-permitted `personality` operation is terminated inside the sandbox;
 - CPU-bound execution stops at the cumulative Task cgroup CPU-time ceiling;
 - memory-backed `/tmp` growth stops at the Task cgroup resident-memory ceiling;
 - explicitly finished Task cgroups are empty and removable.
 
-These tests are ignored by the default test command because they require Linux, Bubblewrap 0.8.0 or newer with `--disable-userns`, static BusyBox, enabled unprivileged user namespaces, and a delegated cgroup v2 subtree. The pinned Ubuntu 24.04 workflow verifies the required Bubblewrap option, loads a path-scoped AppArmor profile for `/usr/bin/bwrap`, and runs the test process inside a dedicated delegated cgroup subtree. It does not disable the system-wide unprivileged user namespace restriction. The workflow then runs the tests explicitly:
+These tests are ignored by the default test command because they require Linux x86_64, Bubblewrap 0.8.0 or newer with `--disable-userns`, static BusyBox, enabled unprivileged user namespaces, seccomp filter support, and a delegated cgroup v2 subtree. The pinned Ubuntu 24.04 workflow verifies the required Bubblewrap option, loads a path-scoped AppArmor profile for `/usr/bin/bwrap`, and runs the test process inside a dedicated delegated cgroup subtree. It does not disable the system-wide unprivileged user namespace restriction. The workflow then runs the tests explicitly:
 
 ```bash
 AIOS_BWRAP_PATH=/usr/bin/bwrap \
@@ -115,7 +123,7 @@ AIOS_CGROUP_ROOT=/sys/fs/cgroup/aios-ci \
 cargo test -p aios-adapter-process --test linux_bubblewrap --locked -- --ignored
 ```
 
-Passing this suite is evidence for the current content-addressed rootfs, Task scratch, deny-network launch, and adapter-level cgroup resource boundary. It does not prove OS-backed rootfs immutability or verify Task Budget/Event integration, Capability-derived mounts, seccomp, destination-scoped networking, or the future approval API.
+Passing this suite is evidence for the current content-addressed rootfs, Task scratch, deny-network launch, sealed seccomp deny policy, and adapter-level cgroup resource boundary. It does not prove OS-backed rootfs immutability or verify Task Budget/Event integration, Capability-derived mounts, destination-scoped networking, or the future approval API.
 
 ## Bounds
 
@@ -164,7 +172,7 @@ The Bubblewrap mode narrows filesystem visibility, denies host network access, c
 - provide approved destination-scoped network access;
 - derive cgroup CPU, memory, or wall-time limits from the current Task Budget or record a `BUDGET_EXCEEDED` Event;
 - enforce process-count, disk, GPU, VRAM, power, or thermal budgets;
-- install a seccomp policy or descriptor-bound file access;
+- provide a per-Tool syscall allowlist or descriptor-bound file access;
 - place the rootfs on an OS-enforced immutable backing store such as fs-verity or a read-only image;
 - eliminate host-side executable and mount time-of-check/time-of-use races;
 - clean Task scratch after process-tree termination;
@@ -175,4 +183,4 @@ Executables registered in direct mode remain trusted. Argument policies in both 
 
 ## Next enforcement milestone
 
-With adapter-level cgroup CPU/memory enforcement connected to the Linux boundary suite, next install a reviewed seccomp policy. Task Budget/Event integration, stale-cgroup recovery, OS-backed rootfs immutability, descriptor-bound Capability mounts, and destination-scoped network brokering remain required before release claims. See [ADR-0006](adr/0006-bubblewrap-process-isolation.md), [ADR-0007](adr/0007-task-scoped-scratch.md), [ADR-0008](adr/0008-content-addressed-rootfs.md), and [ADR-0009](adr/0009-task-cgroup-v2-resource-boundary.md).
+With cgroup CPU/memory enforcement and the sealed seccomp deny policy connected to the Linux boundary suite, next derive those resource limits from the stable Task Budget and record terminal resource-free Events with `BUDGET_EXCEEDED`. Stale-cgroup recovery, OS-backed rootfs immutability, descriptor-bound Capability mounts, destination-scoped network brokering, and workload-specific syscall allowlists remain required before release claims. See [ADR-0006](adr/0006-bubblewrap-process-isolation.md), [ADR-0007](adr/0007-task-scoped-scratch.md), [ADR-0008](adr/0008-content-addressed-rootfs.md), [ADR-0009](adr/0009-task-cgroup-v2-resource-boundary.md), and [ADR-0010](adr/0010-sealed-seccomp-deny-policy.md).

@@ -28,6 +28,7 @@ jobs:
           sudo apt-get install --yes --no-install-recommends bubblewrap busybox-static
           /usr/bin/bwrap --version
           /usr/bin/bwrap --help 2>&1 | grep --fixed-strings -- '--disable-userns'
+          /usr/bin/bwrap --help 2>&1 | grep --fixed-strings -- '--seccomp'
 
       - name: Allow Bubblewrap user namespace setup
         run: sudo /usr/sbin/apparmor_parser --replace .github/apparmor/bwrap
