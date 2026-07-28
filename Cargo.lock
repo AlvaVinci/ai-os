@@ -7,6 +7,7 @@ name = "aios-adapter-process"
 version = "0.1.0"
 dependencies = [
  "aios-adapter-tool",
+ "aios-agent",
  "aios-core",
  "aios-runtime",
  "rustix",

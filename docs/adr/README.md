@@ -21,5 +21,6 @@ Index:
 - [ADR-0008: Verify a content-addressed sealed minimal rootfs](0008-content-addressed-rootfs.md)
 - [ADR-0009: Enforce process CPU time and memory in a Task cgroup v2 boundary](0009-task-cgroup-v2-resource-boundary.md)
 - [ADR-0010: Apply a sealed seccomp deny policy to every Bubblewrap Tool process](0010-sealed-seccomp-deny-policy.md)
+- [ADR-0011: Bind the stable Task Budget to isolated process execution](0011-bind-task-budget-to-process-execution.md)
 
 New ADRs should state context, decision, consequences, alternatives, and related security requirements. Existing ADRs are immutable except for status and supersession links; changed decisions receive a new record.

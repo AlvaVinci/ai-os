@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use aios_core::Budget;
 use aios_runtime::TaskId;
 
 use super::{DirectoryIdentity, MAX_SANDBOX_PATH_BYTES, MAX_TIMEOUT, ProcessAdapterError};
@@ -12,7 +13,7 @@ const CLEANUP_TIMEOUT: Duration = Duration::from_secs(5);
 const CLEANUP_POLL_INTERVAL: Duration = Duration::from_millis(5);
 
 /// Cumulative CPU-time and resident-memory ceilings for one Task cgroup.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Eq, PartialEq)]
 pub struct CgroupResourceBudget {
     cpu_time_micros: u64,
     memory_bytes: u64,
@@ -29,6 +30,17 @@ impl CgroupResourceBudget {
             cpu_time_micros,
             memory_bytes,
         })
+    }
+
+    /// Derives the current Linux cgroup limits from the stable Task Budget.
+    ///
+    /// Until the Local API introduces a separate CPU-time field, the wall-time allowance is also
+    /// the conservative cumulative CPU-time ceiling.
+    pub fn from_task_budget(budget: &Budget) -> Result<Self, ProcessAdapterError> {
+        Self::new(
+            Duration::from_secs(budget.wall_time_seconds),
+            budget.memory_bytes,
+        )
     }
 
     #[must_use]
@@ -167,6 +179,10 @@ pub(crate) struct TaskCgroupState {
 impl TaskCgroupState {
     pub(crate) fn task_id(&self) -> TaskId {
         self.task_id
+    }
+
+    pub(crate) fn budget(&self) -> CgroupResourceBudget {
+        self.budget
     }
 
     pub(crate) fn validate(&self) -> Result<(), ProcessAdapterError> {
@@ -363,6 +379,8 @@ fn contains_word(contents: &str, expected: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use aios_core::Budget;
+
     use super::CgroupResourceBudget;
     use crate::ProcessAdapterError;
     use std::time::Duration;
@@ -382,5 +400,20 @@ mod tests {
             CgroupResourceBudget::new(Duration::from_secs(3_601), 1),
             Err(ProcessAdapterError::InvalidConfig)
         ));
+    }
+
+    #[test]
+    fn derives_cgroup_limits_from_the_stable_task_budget() {
+        let budget = Budget {
+            wall_time_seconds: 60,
+            memory_bytes: 64 * 1_024 * 1_024,
+            max_parallel_agents: 1,
+        };
+
+        let resource_budget =
+            CgroupResourceBudget::from_task_budget(&budget).expect("derive resource budget");
+
+        assert_eq!(resource_budget.cpu_time(), Duration::from_secs(60));
+        assert_eq!(resource_budget.memory_bytes(), budget.memory_bytes);
     }
 }

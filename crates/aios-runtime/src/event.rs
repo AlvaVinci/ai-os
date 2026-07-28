@@ -337,4 +337,14 @@ mod tests {
 
         assert_eq!(json, r#"{"type":"task_failed","code":"RUNTIME_RESTARTED"}"#);
     }
+
+    #[test]
+    fn serializes_budget_failure_as_a_stable_resource_free_event() {
+        let json = serde_json::to_string(&TaskEventKind::TaskFailed {
+            code: ErrorCode::BudgetExceeded,
+        })
+        .expect("serialize failure event");
+
+        assert_eq!(json, r#"{"type":"task_failed","code":"BUDGET_EXCEEDED"}"#);
+    }
 }

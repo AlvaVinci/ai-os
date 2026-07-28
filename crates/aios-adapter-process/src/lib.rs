@@ -21,7 +21,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use aios_adapter_tool::{ToolFailure, ToolHandler, ToolOutput};
-use aios_runtime::TaskId;
+use aios_runtime::{TaskExecutionContext, TaskId};
 
 mod cgroup;
 mod rootfs;
@@ -503,6 +503,17 @@ impl ProcessToolHandler {
         &mut self,
         dynamic_arguments: Vec<String>,
     ) -> Result<ToolOutput, ProcessAdapterError> {
+        self.run_checked_with_timeout(dynamic_arguments, self.timeout)
+    }
+
+    fn run_checked_with_timeout(
+        &mut self,
+        dynamic_arguments: Vec<String>,
+        timeout: Duration,
+    ) -> Result<ToolOutput, ProcessAdapterError> {
+        if timeout.is_zero() || timeout > MAX_TIMEOUT {
+            return Err(ProcessAdapterError::InvalidConfig);
+        }
         validate_arguments(&self.fixed_arguments, &dynamic_arguments)?;
         if !self.argument_policy.allows(&dynamic_arguments) {
             return Err(ProcessAdapterError::ArgumentsDenied);
@@ -601,7 +612,7 @@ impl ProcessToolHandler {
         }
 
         let deadline = Instant::now()
-            .checked_add(self.timeout)
+            .checked_add(timeout)
             .ok_or(ProcessAdapterError::InvalidConfig)?;
         let mut child = command
             .spawn()
@@ -687,6 +698,50 @@ fn terminate_cgroup_child(
 impl ToolHandler for ProcessToolHandler {
     fn execute(&mut self, arguments: Vec<String>) -> Result<ToolOutput, ToolFailure> {
         self.run_checked(arguments).map_err(|_| ToolFailure::new())
+    }
+
+    fn execute_for_task(
+        &mut self,
+        context: &TaskExecutionContext,
+        arguments: Vec<String>,
+    ) -> Result<ToolOutput, ToolFailure> {
+        let task_timeout = context.remaining_wall_time();
+        if task_timeout.is_zero() {
+            return Err(ToolFailure::budget_exceeded());
+        }
+        let (timeout, timeout_is_task_budget) = match &self.launcher {
+            ProcessLauncher::Direct => {
+                (self.timeout.min(task_timeout), task_timeout <= self.timeout)
+            }
+            ProcessLauncher::Bubblewrap {
+                cgroup_launch: Some(cgroup_launch),
+                ..
+            } => {
+                let derived_budget = CgroupResourceBudget::from_task_budget(context.budget())
+                    .map_err(|_| ToolFailure::new())?;
+                if cgroup_launch.task_cgroup.task_id() != context.task_id()
+                    || cgroup_launch.task_cgroup.budget() != derived_budget
+                {
+                    return Err(ToolFailure::new());
+                }
+                (task_timeout, true)
+            }
+            ProcessLauncher::Bubblewrap {
+                cgroup_launch: None,
+                ..
+            } => return Err(ToolFailure::new()),
+        };
+
+        self.run_checked_with_timeout(arguments, timeout)
+            .map_err(|error| {
+                if error == ProcessAdapterError::ResourceLimitExceeded
+                    || (error == ProcessAdapterError::TimedOut && timeout_is_task_budget)
+                {
+                    ToolFailure::budget_exceeded()
+                } else {
+                    ToolFailure::new()
+                }
+            })
     }
 }
 
@@ -1055,9 +1110,9 @@ mod tests {
     use std::path::{Path, PathBuf};
     use std::time::Duration;
 
-    use aios_adapter_tool::ToolAdapterBuilder;
+    use aios_adapter_tool::{ToolAdapterBuilder, ToolAdapterError};
     use aios_core::{ApprovalPolicy, Budget, CapabilitySet, NetworkPolicy, TaskSpec};
-    use aios_runtime::{ExecutionOutcome, SubmitResult, TaskId, TaskSupervisor};
+    use aios_runtime::{ExecutionError, ExecutionOutcome, SubmitResult, TaskId, TaskSupervisor};
 
     #[cfg(not(target_os = "linux"))]
     use super::BubblewrapProcessToolBuilder;
@@ -1508,5 +1563,57 @@ mod tests {
             .expect("execute process Tool");
 
         assert!(matches!(result, ExecutionOutcome::Executed(_)));
+    }
+
+    #[test]
+    fn task_wall_time_reaches_the_tool_gate_as_budget_exceeded() {
+        let sleep = executable(&["/bin/sleep", "/usr/bin/sleep"]);
+        let handler = builder(&sleep, |arguments: &[String]| arguments.is_empty())
+            .fixed_arguments(vec!["2".to_owned()])
+            .timeout(Duration::from_secs(5))
+            .build()
+            .expect("build handler");
+        let mut builder = ToolAdapterBuilder::default();
+        builder
+            .register("run_process", "process_runner", "process.run", handler)
+            .expect("register process Tool");
+        let (catalog, mut gate) = builder.build();
+        let mut supervisor = TaskSupervisor::default();
+        let SubmitResult::Accepted(task) = supervisor
+            .submit(TaskSpec {
+                idempotency_key: "process-budget-test".to_owned(),
+                goal: "Enforce one Task wall-time Budget".to_owned(),
+                capabilities: CapabilitySet {
+                    filesystem: Vec::new(),
+                    network: NetworkPolicy::Deny,
+                    tools: vec!["process_runner".to_owned()],
+                },
+                budget: Budget {
+                    wall_time_seconds: 1,
+                    memory_bytes: 64 * 1024 * 1024,
+                    max_parallel_agents: 1,
+                },
+                approval: ApprovalPolicy {
+                    required_for: Vec::new(),
+                },
+            })
+            .expect("submit Task")
+        else {
+            panic!("expected accepted Task");
+        };
+        supervisor.start(task.task_id).expect("start Task");
+        let operation = catalog
+            .prepare("run_process", Vec::new())
+            .expect("prepare process Tool");
+
+        assert!(matches!(
+            gate.request(
+                &mut supervisor,
+                task.task_id,
+                operation,
+                Duration::from_secs(30)
+            ),
+            Err(ExecutionError::Adapter(ToolAdapterError::BudgetExceeded))
+        ));
     }
 }

@@ -475,6 +475,51 @@ mod tests {
     }
 
     #[test]
+    fn recovers_budget_exceeded_as_a_terminal_task() {
+        let mut store = SqliteEventStore::open_in_memory(100).expect("open database");
+        let task_id = TaskId::new();
+        store
+            .append_batch(task_id, &queued_events())
+            .expect("append queued task");
+        store
+            .append_batch(
+                task_id,
+                &[
+                    TaskEventKind::StateTransitioned {
+                        from: TaskState::Queued,
+                        to: TaskState::Running,
+                    },
+                    TaskEventKind::TaskFailed {
+                        code: ErrorCode::BudgetExceeded,
+                    },
+                    TaskEventKind::StateTransitioned {
+                        from: TaskState::Running,
+                        to: TaskState::Failed,
+                    },
+                ],
+            )
+            .expect("append budget failure");
+
+        let snapshots = store.recover_task_snapshots().expect("recover tasks");
+
+        assert_eq!(snapshots.len(), 1);
+        assert_eq!(snapshots[0].task_id, task_id);
+        assert_eq!(snapshots[0].state, TaskState::Failed);
+        assert!(
+            store
+                .list(task_id, 0)
+                .expect("list events")
+                .iter()
+                .any(|event| {
+                    event.kind
+                        == TaskEventKind::TaskFailed {
+                            code: ErrorCode::BudgetExceeded,
+                        }
+                })
+        );
+    }
+
+    #[test]
     fn recovers_state_across_resource_free_approval_events() {
         let mut store = SqliteEventStore::open_in_memory(100).expect("open database");
         let task_id = TaskId::new();

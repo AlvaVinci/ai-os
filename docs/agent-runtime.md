@@ -35,10 +35,12 @@ The session boundary prevents conversation state from being reused implicitly be
 2. `TaskSupervisor::start_execution` records the `queued` to `running` transition before releasing the Task goal to trusted execution code.
 3. The Model Adapter creates one isolated session.
 4. A final decision records Task success before returning its bounded output.
-5. A Tool decision is reconstructed through the trusted catalog and submitted to `ToolExecutionGate`. Unmatched or ungranted routes are not advertised to the model.
-6. Capability denial fails the Task without invoking the handler.
-7. An approval-required operation and the model session remain retained in memory. Only the exact Approval ID can execute the retained operation and resume the same session; denial, cancellation, or expiration drops it.
-8. Invalid decisions, unknown routes, model failures, Tool failures, and step exhaustion fail closed.
+5. Before and after every synchronous model turn, the Agent checks remaining wall time against the monotonic Task start. Model or approval waits do not reset the allowance.
+6. A Tool decision is reconstructed through the trusted catalog and submitted to `ToolExecutionGate`. Unmatched or ungranted routes are not advertised to the model.
+7. Capability denial fails the Task without invoking the handler.
+8. An approval-required operation and the model session remain retained in memory. Only the exact Approval ID can execute the retained operation and resume the same session; denial, cancellation, expiration, or wall-time exhaustion drops it. The existing expiry poll also checks the Task deadline while approval is idle.
+9. A Tool Budget failure drops the model session and atomically records `TaskFailed { code: BUDGET_EXCEEDED }` before the terminal state transition.
+10. Invalid decisions, unknown routes, model failures, other Tool failures, and step exhaustion fail closed.
 
 Audit persistence failure never authorizes a Tool operation. If a terminal state cannot be recorded, the Agent session is dropped and the caller receives a resource-free supervision failure rather than replaying a consumed model decision.
 
@@ -67,8 +69,9 @@ Final output must be non-empty UTF-8 without NUL. Tool route identifiers and arg
 - No model protocol parser, tokenizer, context-window manager, streaming output, inference timeout, or model artifact identity exists.
 - Tool output is retained in memory and only the immediately preceding output is supplied to the next turn.
 - Agent execution is synchronous and supports one active Task per runtime instance.
-- CPU, RAM, and wall-time Task Budgets are not yet enforced by this layer.
+- The runtime owner must poll `expire` to observe wall-time exhaustion while an Agent is idle waiting for approval; the local daemon does not schedule this monitor yet.
+- The Agent propagates the validated Task Budget and terminates on a typed Tool Budget failure. Current OS enforcement covers Task-bound Process Tools, not model inference.
 - Tool handlers remain subject to the isolation limits documented in [Tool Adapter](tool-adapter.md) and [Process Adapter](process-adapter.md).
 - Agent execution is not exposed through the local API daemon yet.
 
-These limitations keep DOD-001 and the OS-enforcement release gates incomplete.
+These limitations keep DOD-001, complete DOD-005 coverage, and the OS-enforcement release gates incomplete. See [ADR-0011](adr/0011-bind-task-budget-to-process-execution.md).
