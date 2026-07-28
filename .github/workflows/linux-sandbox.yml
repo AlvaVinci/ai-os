@@ -23,19 +23,32 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install sandbox dependencies
+        shell: bash
         run: |
           sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends bubblewrap busybox-static
-          /usr/bin/bwrap --version
-          /usr/bin/bwrap --help 2>&1 | grep --fixed-strings -- '--disable-userns'
-          /usr/bin/bwrap --help 2>&1 | grep --fixed-strings -- '--seccomp'
+          sudo apt-get install --yes --no-install-recommends busybox-static curl gcc libcap-dev meson pkg-config xz-utils
+          curl --fail --location --proto '=https' \
+            --output /tmp/bubblewrap-0.11.2.tar.xz \
+            https://github.com/containers/bubblewrap/releases/download/v0.11.2/bubblewrap-0.11.2.tar.xz
+          echo '69abc30005d2186baf7737feacd8da35633b93cf5af38838ecff17c5f8e924f6  /tmp/bubblewrap-0.11.2.tar.xz' | sha256sum --check
+          tar --extract --file /tmp/bubblewrap-0.11.2.tar.xz --directory /tmp
+          meson setup /tmp/bubblewrap-0.11.2/build /tmp/bubblewrap-0.11.2 \
+            --prefix=/usr/local \
+            -Dman=disabled \
+            -Dtests=false
+          meson compile -C /tmp/bubblewrap-0.11.2/build
+          sudo meson install -C /tmp/bubblewrap-0.11.2/build --no-rebuild
+          /usr/local/bin/bwrap --version
+          /usr/local/bin/bwrap --help 2>&1 | grep --fixed-strings -- '--disable-userns'
+          /usr/local/bin/bwrap --help 2>&1 | grep --fixed-strings -- '--seccomp'
+          /usr/local/bin/bwrap --help 2>&1 | grep --fixed-strings -- '--ro-bind-fd'
 
       - name: Allow Bubblewrap user namespace setup
         run: sudo /usr/sbin/apparmor_parser --replace .github/apparmor/bwrap
 
       - name: Verify Bubblewrap namespace setup
         run: |
-          /usr/bin/bwrap \
+          /usr/local/bin/bwrap \
             --unshare-user \
             --disable-userns \
             --unshare-net \
@@ -64,7 +77,7 @@ jobs:
 
       - name: Run Linux Bubblewrap boundary tests
         env:
-          AIOS_BWRAP_PATH: /usr/bin/bwrap
+          AIOS_BWRAP_PATH: /usr/local/bin/bwrap
           AIOS_BUSYBOX_PATH: /usr/bin/busybox
           AIOS_CGROUP_ROOT: /sys/fs/cgroup/aios-ci
         shell: bash

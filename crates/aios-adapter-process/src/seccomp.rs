@@ -201,7 +201,7 @@ pub(crate) struct SeccompFilterFile {
 
 #[cfg(target_os = "linux")]
 impl SeccompFilterFile {
-    pub(crate) fn create() -> Result<Self, ProcessAdapterError> {
+    pub(crate) fn create(inherit_across_exec: bool) -> Result<Self, ProcessAdapterError> {
         use std::io::{Seek, SeekFrom, Write};
         use std::os::fd::AsRawFd;
 
@@ -223,8 +223,10 @@ impl SeccompFilterFile {
             SealFlags::WRITE | SealFlags::GROW | SealFlags::SHRINK | SealFlags::SEAL,
         )
         .map_err(|_| ProcessAdapterError::SeccompUnavailable)?;
-        fcntl_setfd(&file, FdFlags::empty())
-            .map_err(|_| ProcessAdapterError::SeccompUnavailable)?;
+        if inherit_across_exec {
+            fcntl_setfd(&file, FdFlags::empty())
+                .map_err(|_| ProcessAdapterError::SeccompUnavailable)?;
+        }
 
         if file.as_raw_fd() <= 2 {
             return Err(ProcessAdapterError::SeccompUnavailable);
@@ -237,6 +239,12 @@ impl SeccompFilterFile {
 
         self.file.as_raw_fd()
     }
+
+    pub(crate) fn as_fd(&self) -> std::os::fd::BorrowedFd<'_> {
+        use std::os::fd::AsFd;
+
+        self.file.as_fd()
+    }
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -244,7 +252,7 @@ pub(crate) struct SeccompFilterFile;
 
 #[cfg(not(target_os = "linux"))]
 impl SeccompFilterFile {
-    pub(crate) fn create() -> Result<Self, ProcessAdapterError> {
+    pub(crate) fn create(_inherit_across_exec: bool) -> Result<Self, ProcessAdapterError> {
         Err(ProcessAdapterError::UnsupportedPlatform)
     }
 
@@ -416,7 +424,7 @@ mod tests {
         use rustix::fs::{SealFlags, fcntl_get_seals};
         use rustix::io::{FdFlags, fcntl_getfd};
 
-        let filter = SeccompFilterFile::create().expect("create sealed seccomp filter");
+        let filter = SeccompFilterFile::create(true).expect("create sealed seccomp filter");
         let seals = fcntl_get_seals(&filter.file).expect("read seccomp descriptor seals");
         assert!(seals.contains(SealFlags::WRITE));
         assert!(seals.contains(SealFlags::GROW));

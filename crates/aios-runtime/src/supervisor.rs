@@ -5,7 +5,8 @@ use std::time::{Duration, Instant};
 
 use aios_core::{
     Budget, CapabilityPolicy, CapabilityRequest, DenialReason, ErrorCode, FileAccess,
-    NetworkTransport, PolicyDecision, StateTransitionError, TaskSpec, TaskState, ValidationErrors,
+    FileCapability, NetworkTransport, PolicyDecision, StateTransitionError, TaskSpec, TaskState,
+    ValidationErrors,
 };
 
 use crate::{
@@ -142,6 +143,7 @@ impl TaskExecutionInput {
 pub struct TaskExecutionContext {
     task_id: TaskId,
     budget: Budget,
+    filesystem_capabilities: Vec<FileCapability>,
     started_at: Instant,
 }
 
@@ -154,6 +156,11 @@ impl TaskExecutionContext {
     #[must_use]
     pub const fn budget(&self) -> &Budget {
         &self.budget
+    }
+
+    #[must_use]
+    pub fn filesystem_capabilities(&self) -> &[FileCapability] {
+        &self.filesystem_capabilities
     }
 
     #[must_use]
@@ -476,6 +483,7 @@ impl<S: EventStore> TaskSupervisor<S> {
         Ok(TaskExecutionContext {
             task_id,
             budget: record.spec.budget.clone(),
+            filesystem_capabilities: record.spec.capabilities.filesystem.clone(),
             started_at,
         })
     }
@@ -996,6 +1004,7 @@ mod tests {
         let mut supervisor = TaskSupervisor::default();
         let spec = valid_task();
         let expected_budget = spec.budget.clone();
+        let expected_filesystem_capabilities = spec.capabilities.filesystem.clone();
         let task_id = accepted_task_id(supervisor.submit(spec).expect("submit task"));
 
         assert!(matches!(
@@ -1009,6 +1018,7 @@ mod tests {
             .expect("release execution context");
         assert_eq!(context.task_id(), task_id);
         assert!(context.budget() == &expected_budget);
+        assert!(context.filesystem_capabilities() == expected_filesystem_capabilities);
         assert!(!context.remaining_wall_time().is_zero());
         assert!(
             context.remaining_wall_time() <= Duration::from_secs(expected_budget.wall_time_seconds)

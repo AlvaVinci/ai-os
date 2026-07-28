@@ -101,7 +101,9 @@ Cancellation, failure, success, rejection, denial, and expiration remove pending
 
 ### Filesystem
 
-Current policy is lexical. A Linux filesystem adapter must additionally:
+Policy matching remains lexical. The Linux Process Adapter now implements a bounded read-only subset: trusted configuration supplies the exact Task read Capability set and a source root, sources are resolved beneath an opened root with `openat2`, opened descriptors cross a private launch broker, and Bubblewrap mounts and closes them before Tool execution. Write-only Capabilities are rejected because a writable bind mount would also grant reads.
+
+A complete filesystem adapter must still:
 
 - resolve from a trusted directory descriptor;
 - reject unsafe symlink, magic-link, traversal, and mount escape behavior;
@@ -200,7 +202,7 @@ Violations of these invariants are security defects. The associated threats and 
 | Schema validation | implemented | implemented | implemented | implemented |
 | Deterministic policy | lexical path/access | exact TCP host and port, deny default | exact Tool/action | capability-first action match |
 | Complete operation retention | runtime type available | runtime type available | implemented by Tool gate | implemented |
-| OS resource binding | not implemented | not implemented | path/inode precheck only; OS binding not implemented | process-local only |
+| OS resource binding | read-only Process mounts implemented; write and general file operations incomplete | not implemented | path/inode precheck only; OS binding not implemented | process-local only |
 | Restart recovery | no sensitive Task input | no sensitive Task input | no pending operation | public Task state only |
 
 The matrix must be read literally. A policy check without OS resource binding is not complete Capability enforcement.

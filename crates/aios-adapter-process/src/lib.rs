@@ -8,8 +8,10 @@
 //! root filesystem, a separate writable scratch directory, namespace isolation, and no network.
 //! A delegated cgroup v2 subtree may additionally enforce cumulative CPU-time and resident-memory
 //! ceilings. The Linux x86_64 Bubblewrap path also installs a built-in sealed seccomp deny policy.
-//! This crate is still not complete operating-system Capability enforcement: Task Budget wiring,
-//! descriptor-bound filesystem access, and Capability-derived mounts remain future work.
+//! Task-bound handlers may additionally mount the exact read Filesystem Capabilities from opened
+//! descriptors. This crate is still not complete operating-system Capability enforcement:
+//! write-only filesystem semantics, destination-scoped networking, and descriptor-bound rootfs,
+//! scratch, and executable use remain future work.
 
 use std::collections::BTreeMap;
 use std::error::Error;
@@ -21,9 +23,11 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use aios_adapter_tool::{ToolFailure, ToolHandler, ToolOutput};
+use aios_core::FileCapability;
 use aios_runtime::{TaskExecutionContext, TaskId};
 
 mod cgroup;
+mod descriptor;
 mod rootfs;
 mod seccomp;
 
@@ -166,6 +170,8 @@ pub enum ProcessAdapterError {
     InvalidResourceControl,
     ResourceLimitExceeded,
     SeccompUnavailable,
+    UnsupportedFilesystemCapability,
+    DescriptorTransferFailed,
 }
 
 impl Display for ProcessAdapterError {
@@ -185,6 +191,8 @@ impl Display for ProcessAdapterError {
             Self::InvalidResourceControl => "invalid Process Adapter resource control",
             Self::ResourceLimitExceeded => "process resource limit exceeded",
             Self::SeccompUnavailable => "Process Adapter seccomp boundary unavailable",
+            Self::UnsupportedFilesystemCapability => "unsupported filesystem Capability semantics",
+            Self::DescriptorTransferFailed => "filesystem Capability descriptor transfer failed",
         };
         formatter.write_str(message)
     }
@@ -220,6 +228,8 @@ pub struct BubblewrapProcessToolBuilder {
     verified_root_state: Option<rootfs::VerifiedRootFilesystemState>,
     task_cgroup_state: Option<cgroup::TaskCgroupState>,
     cgroup_launcher: Option<PathBuf>,
+    filesystem_capability_source_root: Option<PathBuf>,
+    filesystem_capabilities: Vec<FileCapability>,
     fixed_arguments: Vec<String>,
     environment: Vec<(String, String)>,
     timeout: Duration,
@@ -247,6 +257,8 @@ impl BubblewrapProcessToolBuilder {
             verified_root_state: None,
             task_cgroup_state: None,
             cgroup_launcher: None,
+            filesystem_capability_source_root: None,
+            filesystem_capabilities: Vec::new(),
             fixed_arguments: Vec::new(),
             environment: Vec::new(),
             timeout: DEFAULT_TIMEOUT,
@@ -329,6 +341,22 @@ impl BubblewrapProcessToolBuilder {
         self
     }
 
+    /// Binds the exact Task read Capabilities to objects opened beneath one trusted host root.
+    ///
+    /// Each absolute Capability path is interpreted relative to `source_root` and mounted at the
+    /// same absolute path inside the sandbox. Write-only Capabilities are rejected because a
+    /// read-write bind mount would silently grant read authority.
+    #[must_use]
+    pub fn filesystem_capabilities(
+        mut self,
+        source_root: impl Into<PathBuf>,
+        capabilities: Vec<FileCapability>,
+    ) -> Self {
+        self.filesystem_capability_source_root = Some(source_root.into());
+        self.filesystem_capabilities = capabilities;
+        self
+    }
+
     pub fn build(self) -> Result<ProcessToolHandler, ProcessAdapterError> {
         if !cfg!(target_os = "linux") {
             return Err(ProcessAdapterError::UnsupportedPlatform);
@@ -345,6 +373,16 @@ impl BubblewrapProcessToolBuilder {
         }
         if self.task_cgroup_state.is_some() != self.cgroup_launcher.is_some() {
             return Err(ProcessAdapterError::InvalidResourceControl);
+        }
+        if !self.filesystem_capabilities.is_empty()
+            && (self.task_id.is_none() || self.task_cgroup_state.is_none())
+        {
+            return Err(ProcessAdapterError::InvalidSandbox);
+        }
+        if self.filesystem_capability_source_root.is_some()
+            != !self.filesystem_capabilities.is_empty()
+        {
+            return Err(ProcessAdapterError::InvalidSandbox);
         }
         validate_arguments(&self.fixed_arguments, &[])?;
 
@@ -363,6 +401,13 @@ impl BubblewrapProcessToolBuilder {
         let (executable, executable_identity, sandbox_executable) =
             canonical_sandbox_executable(&root_filesystem, &self.sandbox_executable)?;
         let environment = validate_environment(self.environment)?;
+        let filesystem_capability_mounts = match self.filesystem_capability_source_root {
+            Some(source_root) => descriptor::open_filesystem_capabilities(
+                &source_root,
+                self.filesystem_capabilities,
+            )?,
+            None => Vec::new(),
+        };
         let cgroup_launch = match (self.task_cgroup_state, self.cgroup_launcher) {
             (Some(task_cgroup), Some(launcher)) => {
                 let launcher = canonical_executable(&launcher)
@@ -395,6 +440,7 @@ impl BubblewrapProcessToolBuilder {
                 verified_root_state: self.verified_root_state,
                 sandbox_executable,
                 cgroup_launch,
+                filesystem_capability_mounts,
             },
         })
     }
@@ -488,6 +534,7 @@ enum ProcessLauncher {
         verified_root_state: Option<rootfs::VerifiedRootFilesystemState>,
         sandbox_executable: PathBuf,
         cgroup_launch: Option<Box<CgroupLaunch>>,
+        filesystem_capability_mounts: Vec<descriptor::FilesystemCapabilityMount>,
     },
 }
 
@@ -503,13 +550,14 @@ impl ProcessToolHandler {
         &mut self,
         dynamic_arguments: Vec<String>,
     ) -> Result<ToolOutput, ProcessAdapterError> {
-        self.run_checked_with_timeout(dynamic_arguments, self.timeout)
+        self.run_checked_with_timeout(dynamic_arguments, self.timeout, false)
     }
 
     fn run_checked_with_timeout(
         &mut self,
         dynamic_arguments: Vec<String>,
         timeout: Duration,
+        filesystem_capabilities_authorized: bool,
     ) -> Result<ToolOutput, ProcessAdapterError> {
         if timeout.is_zero() || timeout > MAX_TIMEOUT {
             return Err(ProcessAdapterError::InvalidConfig);
@@ -524,11 +572,24 @@ impl ProcessToolHandler {
         if let Some(identity) = self.working_directory_identity {
             validate_task_scratch_identity(&self.working_directory, identity)?;
         }
+        let descriptor_mounts_present = matches!(
+            &self.launcher,
+            ProcessLauncher::Bubblewrap {
+                filesystem_capability_mounts,
+                ..
+            } if !filesystem_capability_mounts.is_empty()
+        );
+        if descriptor_mounts_present && !filesystem_capabilities_authorized {
+            return Err(ProcessAdapterError::InvalidSandbox);
+        }
         let seccomp_filter = match &self.launcher {
-            ProcessLauncher::Bubblewrap { .. } => Some(seccomp::SeccompFilterFile::create()?),
+            ProcessLauncher::Bubblewrap { .. } => Some(seccomp::SeccompFilterFile::create(
+                !descriptor_mounts_present,
+            )?),
             ProcessLauncher::Direct => None,
         };
 
+        let mut descriptor_sender = None;
         let mut command = match &self.launcher {
             ProcessLauncher::Direct => {
                 let mut command = Command::new(&self.executable);
@@ -545,6 +606,7 @@ impl ProcessToolHandler {
                 verified_root_state,
                 sandbox_executable,
                 cgroup_launch,
+                filesystem_capability_mounts,
             } => {
                 if ExecutableIdentity::read(bubblewrap)? != *bubblewrap_identity {
                     return Err(ProcessAdapterError::ExecutableChanged);
@@ -561,19 +623,44 @@ impl ProcessToolHandler {
                 let mut command = if let Some(cgroup_launch) = cgroup_launch {
                     let (process_file, device, inode) = cgroup_launch.task_cgroup.launch_identity();
                     let mut command = Command::new(&cgroup_launch.launcher);
-                    command
-                        .arg(process_file)
-                        .arg(device.to_string())
-                        .arg(inode.to_string())
-                        .arg(bubblewrap);
+                    if filesystem_capability_mounts.is_empty() {
+                        command
+                            .arg(process_file)
+                            .arg(device.to_string())
+                            .arg(inode.to_string())
+                            .arg(bubblewrap);
+                    } else {
+                        let (sender, receiver) = descriptor::descriptor_channel()?;
+                        command
+                            .arg("--descriptor-broker")
+                            .arg(process_file)
+                            .arg(device.to_string())
+                            .arg(inode.to_string())
+                            .arg(bubblewrap)
+                            .arg(filesystem_capability_mounts.len().to_string());
+                        for mount in filesystem_capability_mounts {
+                            command.arg("read").arg(&mount.capability().path);
+                        }
+                        command.stdin(receiver);
+                        descriptor_sender = Some(sender);
+                    }
                     command
                 } else {
+                    if !filesystem_capability_mounts.is_empty() {
+                        return Err(ProcessAdapterError::InvalidResourceControl);
+                    }
                     Command::new(bubblewrap)
                 };
-                let seccomp_fd = seccomp_filter
-                    .as_ref()
-                    .ok_or(ProcessAdapterError::SeccompUnavailable)?
-                    .raw_fd();
+                let seccomp_fd = if filesystem_capability_mounts.is_empty() {
+                    Some(
+                        seccomp_filter
+                            .as_ref()
+                            .ok_or(ProcessAdapterError::SeccompUnavailable)?
+                            .raw_fd(),
+                    )
+                } else {
+                    None
+                };
                 command
                     .args(bubblewrap_arguments(
                         root_filesystem,
@@ -590,9 +677,11 @@ impl ProcessToolHandler {
         command
             .env_clear()
             .envs(&self.environment)
-            .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
+        if descriptor_sender.is_none() {
+            command.stdin(Stdio::null());
+        }
         let task_cgroup = match &self.launcher {
             ProcessLauncher::Bubblewrap { cgroup_launch, .. } => cgroup_launch
                 .as_ref()
@@ -617,6 +706,27 @@ impl ProcessToolHandler {
         let mut child = command
             .spawn()
             .map_err(|_| ProcessAdapterError::SpawnFailed)?;
+        if let Some(sender) = descriptor_sender {
+            let transfer = match (&self.launcher, seccomp_filter.as_ref()) {
+                (
+                    ProcessLauncher::Bubblewrap {
+                        filesystem_capability_mounts,
+                        ..
+                    },
+                    Some(seccomp_filter),
+                ) => sender.send(seccomp_filter, filesystem_capability_mounts),
+                _ => Err(ProcessAdapterError::DescriptorTransferFailed),
+            };
+            if let Err(error) = transfer {
+                if let Some(task_cgroup) = &task_cgroup {
+                    let _result = terminate_cgroup_child(task_cgroup, &mut child);
+                } else {
+                    let _result = child.kill();
+                    let _result = child.wait();
+                }
+                return Err(error);
+            }
+        }
 
         loop {
             let status = match child.try_wait() {
@@ -715,12 +825,17 @@ impl ToolHandler for ProcessToolHandler {
             }
             ProcessLauncher::Bubblewrap {
                 cgroup_launch: Some(cgroup_launch),
+                filesystem_capability_mounts,
                 ..
             } => {
                 let derived_budget = CgroupResourceBudget::from_task_budget(context.budget())
                     .map_err(|_| ToolFailure::new())?;
                 if cgroup_launch.task_cgroup.task_id() != context.task_id()
                     || cgroup_launch.task_cgroup.budget() != derived_budget
+                    || !filesystem_capabilities_match(
+                        context.filesystem_capabilities(),
+                        filesystem_capability_mounts,
+                    )
                 {
                     return Err(ToolFailure::new());
                 }
@@ -732,7 +847,7 @@ impl ToolHandler for ProcessToolHandler {
             } => return Err(ToolFailure::new()),
         };
 
-        self.run_checked_with_timeout(arguments, timeout)
+        self.run_checked_with_timeout(arguments, timeout, true)
             .map_err(|error| {
                 if error == ProcessAdapterError::ResourceLimitExceeded
                     || (error == ProcessAdapterError::TimedOut && timeout_is_task_budget)
@@ -743,6 +858,26 @@ impl ToolHandler for ProcessToolHandler {
                 }
             })
     }
+}
+
+fn filesystem_capabilities_match(
+    expected: &[FileCapability],
+    mounted: &[descriptor::FilesystemCapabilityMount],
+) -> bool {
+    if expected.len() != mounted.len() {
+        return false;
+    }
+    let mut expected: Vec<_> = expected
+        .iter()
+        .map(|capability| (capability.path.as_str(), capability.access))
+        .collect();
+    let mut mounted: Vec<_> = mounted
+        .iter()
+        .map(|mount| (mount.capability().path.as_str(), mount.capability().access))
+        .collect();
+    expected.sort_unstable();
+    mounted.sort_unstable();
+    expected == mounted
 }
 
 #[cfg(unix)]
@@ -1008,7 +1143,7 @@ fn bubblewrap_arguments(
     root_filesystem: &Path,
     scratch_directory: &Path,
     sandbox_executable: &Path,
-    seccomp_fd: i32,
+    seccomp_fd: Option<i32>,
 ) -> Vec<std::ffi::OsString> {
     let mut arguments = vec![
         std::ffi::OsString::from("--unshare-all"),
@@ -1016,9 +1151,13 @@ fn bubblewrap_arguments(
         std::ffi::OsString::from("--disable-userns"),
         std::ffi::OsString::from("--die-with-parent"),
         std::ffi::OsString::from("--new-session"),
-        std::ffi::OsString::from("--seccomp"),
-        std::ffi::OsString::from(seccomp_fd.to_string()),
     ];
+    if let Some(seccomp_fd) = seccomp_fd {
+        arguments.extend([
+            std::ffi::OsString::from("--seccomp"),
+            std::ffi::OsString::from(seccomp_fd.to_string()),
+        ]);
+    }
     arguments.extend([
         std::ffi::OsString::from("--cap-drop"),
         std::ffi::OsString::from("ALL"),
@@ -1156,7 +1295,7 @@ mod tests {
             Path::new("/opt/aios/rootfs"),
             Path::new("/var/lib/aios/tasks/task-1"),
             Path::new("/usr/bin/tool"),
-            9,
+            Some(9),
         );
         let arguments: Vec<String> = arguments
             .into_iter()
