@@ -143,9 +143,12 @@ Internal I/O errors, database details, Task goals, and capability values are not
 2. SQLite Events are validated and reduced to public Task ID and state snapshots.
 3. Every non-terminal snapshot receives one atomic `task_failed` Event with code `RUNTIME_RESTARTED` followed by its transition to `failed`.
 4. Terminal Tasks remain unchanged. A later restart observes the terminal transition and does not append another failure.
-5. Any corrupt sequence, capacity failure, or audit write failure aborts daemon startup and removes only the exact socket it created.
+5. When `--cgroup-root` is configured, the daemon passes only recovered Task IDs to the Process Adapter. Each existing exact `task-{TaskId}` cgroup is killed, observed empty, identity-checked, and removed without recursive traversal.
+6. Any corrupt sequence, capacity failure, audit write failure, invalid cgroup topology, cleanup timeout, or identity mismatch aborts daemon startup and removes only the exact socket it created.
 
-Recovered Task IDs remain available through `get_task` and `events`. Goals, Capabilities, model state, Tool arguments, pending operations, approval grants, and idempotency keys are never reconstructed from Events. Reusing a prior idempotency key after restart therefore creates a new Task only when the user explicitly submits it; the old Task is never executed again. Recovered Tasks count toward the configured Task capacity. One database must not be shared by daemons configured with different socket paths; database-level ownership enforcement remains future work.
+Recovered Task IDs remain available through `get_task` and `events`. Goals, Capabilities, model state, Tool arguments, pending operations, approval grants, and idempotency keys are never reconstructed from Events. Reusing a prior idempotency key after restart therefore creates a new Task only when the user explicitly submits it; the old Task is never executed again. Recovered Tasks count toward the configured Task capacity.
+
+`--cgroup-root` is optional because the daemon does not silently assume host resource-control authority. A deployment that uses Task cgroups must provide the same exclusive delegated root on every startup and run the daemon inside a separate child cgroup beneath it. Cgroups absent from the recovered Event Store are not selected for deletion. Omitting the option performs no stale-process cleanup. One database or delegated root must not be shared by daemons configured with different socket paths; cross-process ownership locking remains future work.
 
 ## Command-line client
 

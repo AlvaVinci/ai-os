@@ -80,6 +80,7 @@ These exclusions do not relax a security boundary. An unavailable feature must f
 
 - Events and their derived public Task state survive daemon restart and detect corrupt or incomplete sequences.
 - v0.1 does not resume execution after restart. Before accepting new work, every previously non-terminal Task transitions to `failed` with the stable `RUNTIME_RESTARTED` category so it cannot be mistaken for running work.
+- When Task cgroup enforcement is configured, startup terminates and removes only cgroups identified by recovered durable Task IDs before accepting new work; cleanup failure aborts startup.
 - Pending approvals, grants, complete operations, and authority are never reconstructed from audit Events.
 - Task goals, Capability values, Tool arguments, model responses, and secrets are not persisted in plaintext.
 - Idempotency behavior across restart is explicit and cannot cause an old Task to execute again silently.

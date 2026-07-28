@@ -43,6 +43,7 @@ dependencies = [
 name = "aios-local-api"
 version = "0.1.0"
 dependencies = [
+ "aios-adapter-process",
  "aios-core",
  "aios-runtime",
  "aios-storage-sqlite",

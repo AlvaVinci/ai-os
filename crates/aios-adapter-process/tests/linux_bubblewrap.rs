@@ -8,6 +8,7 @@ use std::os::fd::AsRawFd;
 use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -512,6 +513,63 @@ fn linux_sandbox_rejects_mismatched_or_reused_task_cgroup() {
     ));
 
     task_cgroup.finish().expect("remove mismatched Task cgroup");
+}
+
+#[test]
+#[ignore = "requires Linux and a delegated cgroup v2 subtree"]
+fn linux_startup_reconciliation_kills_and_removes_only_recovered_task_cgroups() {
+    let root = env::var_os("AIOS_CGROUP_ROOT")
+        .map(PathBuf::from)
+        .expect("delegated cgroup root must be configured");
+    let manager = CgroupV2Manager::new(root).expect("open delegated cgroup v2 root");
+    let budget = CgroupResourceBudget::new(Duration::from_secs(5), 64 * MEBIBYTE)
+        .expect("configure resource budget");
+    let recovered_task_id = TaskId::new();
+    let unrelated_task_id = TaskId::new();
+    let recovered_cgroup = manager
+        .create(recovered_task_id, budget)
+        .expect("create recovered Task cgroup");
+    let recovered_directory = recovered_cgroup.directory().to_owned();
+    let unrelated_cgroup = manager
+        .create(unrelated_task_id, budget)
+        .expect("create unrelated Task cgroup");
+    let unrelated_directory = unrelated_cgroup.directory().to_owned();
+    let mut stale_process = Command::new(required_executable("AIOS_BUSYBOX_PATH"))
+        .arg("sleep")
+        .arg("30")
+        .spawn()
+        .expect("spawn stale Task process");
+    fs::write(
+        recovered_directory.join("cgroup.procs"),
+        stale_process.id().to_string(),
+    )
+    .expect("move stale process into recovered Task cgroup");
+    drop(recovered_cgroup);
+
+    assert_eq!(
+        manager
+            .reconcile_stale_task_cgroups([recovered_task_id])
+            .expect("reconcile recovered Task cgroup"),
+        1
+    );
+    assert!(!recovered_directory.exists());
+    assert!(unrelated_directory.exists());
+    assert_eq!(
+        manager
+            .reconcile_stale_task_cgroups([recovered_task_id])
+            .expect("repeat reconciliation"),
+        0
+    );
+    assert!(
+        !stale_process
+            .wait()
+            .expect("reap stale Task process")
+            .success()
+    );
+
+    unrelated_cgroup
+        .finish()
+        .expect("remove unrelated Task cgroup");
 }
 
 fn verify_busybox_wget_can_reach_host(fixture: &SandboxFixture) {

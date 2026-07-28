@@ -1,6 +1,7 @@
 use std::error::Error;
 use std::path::PathBuf;
 
+use aios_adapter_process::CgroupV2Manager;
 use aios_local_api::{ApiService, LocalServer, ServerConfig};
 use aios_runtime::TaskSupervisor;
 use aios_storage_sqlite::SqliteEventStore;
@@ -13,6 +14,11 @@ fn main() -> Result<(), Box<dyn Error>> {
     let server = LocalServer::bind(&options.socket, ServerConfig::default())?;
     let store = SqliteEventStore::open(&options.database, DEFAULT_MAX_EVENTS_PER_TASK)?;
     let supervisor = TaskSupervisor::recover(store, DEFAULT_MAX_TASKS)?;
+    if let Some(cgroup_root) = &options.cgroup_root {
+        let removed = CgroupV2Manager::new(cgroup_root)?
+            .reconcile_stale_task_cgroups(supervisor.recovered_task_ids())?;
+        eprintln!("aiosd removed {removed} stale Task cgroup(s)");
+    }
     let mut service = ApiService::new(supervisor);
 
     eprintln!("aiosd listening on {:?}", options.socket);
@@ -23,18 +29,23 @@ fn main() -> Result<(), Box<dyn Error>> {
 struct Options {
     socket: PathBuf,
     database: PathBuf,
+    cgroup_root: Option<PathBuf>,
 }
 
 impl Options {
     fn parse(mut arguments: impl Iterator<Item = String>) -> Result<Self, OptionsError> {
         let mut socket = None;
         let mut database = None;
+        let mut cgroup_root = None;
 
         while let Some(argument) = arguments.next() {
             let value = arguments.next().ok_or(OptionsError)?;
             match argument.as_str() {
                 "--socket" if socket.is_none() => socket = Some(PathBuf::from(value)),
                 "--database" if database.is_none() => database = Some(PathBuf::from(value)),
+                "--cgroup-root" if cgroup_root.is_none() => {
+                    cgroup_root = Some(PathBuf::from(value));
+                }
                 _ => return Err(OptionsError),
             }
         }
@@ -42,6 +53,7 @@ impl Options {
         Ok(Self {
             socket: socket.ok_or(OptionsError)?,
             database: database.ok_or(OptionsError)?,
+            cgroup_root,
         })
     }
 }
@@ -51,7 +63,8 @@ struct OptionsError;
 
 impl std::fmt::Display for OptionsError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str("usage: aiosd --socket PATH --database PATH")
+        formatter
+            .write_str("usage: aiosd --socket PATH --database PATH [--cgroup-root CGROUP_V2_PATH]")
     }
 }
 
@@ -80,6 +93,32 @@ mod tests {
             options.database.to_string_lossy(),
             "/tmp/aios/events.sqlite"
         );
+        assert!(options.cgroup_root.is_none());
+    }
+
+    #[test]
+    fn parses_optional_cgroup_root() {
+        let options = Options::parse(
+            [
+                "--socket",
+                "/tmp/aios/aiosd.sock",
+                "--database",
+                "/tmp/aios/events.sqlite",
+                "--cgroup-root",
+                "/sys/fs/cgroup/aios",
+            ]
+            .into_iter()
+            .map(str::to_owned),
+        )
+        .expect("valid options");
+
+        assert_eq!(
+            options
+                .cgroup_root
+                .expect("cgroup root configured")
+                .to_string_lossy(),
+            "/sys/fs/cgroup/aios"
+        );
     }
 
     #[test]
@@ -94,6 +133,23 @@ mod tests {
                 ["--socket", "/tmp/a", "--socket", "/tmp/b"]
                     .into_iter()
                     .map(str::to_owned)
+            )
+            .is_err()
+        );
+        assert!(
+            Options::parse(
+                [
+                    "--socket",
+                    "/tmp/a",
+                    "--database",
+                    "/tmp/events",
+                    "--cgroup-root",
+                    "/sys/fs/cgroup/a",
+                    "--cgroup-root",
+                    "/sys/fs/cgroup/b",
+                ]
+                .into_iter()
+                .map(str::to_owned)
             )
             .is_err()
         );

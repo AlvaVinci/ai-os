@@ -93,6 +93,7 @@ Implemented:
 - SQLite-backed Event Store with atomic batches and schema versioning
 - event-derived Task state recovery after a restart
 - deterministic restart failure for every previously non-terminal Task without restoring execution authority
+- optional fail-closed stale Task cgroup termination during non-resumable daemon startup
 - owner-only database creation and insecure-file rejection on Unix
 - audit-first state changes that leave task state unchanged when event storage fails
 - `aiosd` with a bounded, owner-only Unix-socket API
@@ -147,6 +148,12 @@ cargo run -p aios-local-api --bin aiosd -- \
   --socket "$runtime_dir/aiosd.sock" \
   --database "$runtime_dir/events.sqlite"
 ```
+
+Linux deployments that use the Process Adapter's delegated cgroup v2 root must start the daemon
+inside a separate child cgroup and add `--cgroup-root /sys/fs/cgroup/aios`. Startup then removes
+only exact Task cgroups represented by the selected Event Store before accepting requests. The
+root is exclusive to that daemon/database configuration; omitting the option performs no stale
+cgroup cleanup.
 
 In another terminal, use the experimental client:
 

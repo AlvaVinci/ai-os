@@ -635,6 +635,11 @@ mod tests {
         {
             let store = SqliteEventStore::open(database.path(), 100).expect("reopen database");
             let mut supervisor = TaskSupervisor::recover(store, 10).expect("recover supervisor");
+            let recovered_task_ids: Vec<TaskId> = supervisor.recovered_task_ids().collect();
+            assert_eq!(recovered_task_ids.len(), 4);
+            for task_id in [queued_task, running_task, waiting_task, succeeded_task] {
+                assert!(recovered_task_ids.contains(&task_id));
+            }
 
             for task_id in [queued_task, running_task, waiting_task] {
                 assert_eq!(
