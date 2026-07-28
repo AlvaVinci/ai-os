@@ -21,8 +21,9 @@ The adapter verifies the route-to-capability mapping again immediately before ca
 2. The builder produces one matching catalog and `ToolExecutionGate`; the raw adapter type is never exposed.
 3. The execution facade keeps its `ExecutionGate` and handler registry private, so callers cannot invoke a handler without authorization.
 4. The catalog prepares a bounded `ToolOperation` from the selected route and arguments.
-5. `ExecutionGate` applies capability policy and approval before invoking the adapter.
-6. The adapter revalidates the fixed scope and argument bounds, then passes the argument vector directly to the registered handler.
+5. `ToolExecutionGate` binds the running Task's non-serializable identity, validated Budget, and monotonic start context to the private operation.
+6. `ExecutionGate` applies capability policy and approval before invoking the adapter.
+7. The adapter revalidates the fixed scope and argument bounds, then passes the Task context and argument vector directly to the registered handler.
 
 Arguments remain separate strings. The adapter performs no interpolation or parsing as shell syntax.
 
@@ -37,7 +38,7 @@ Arguments remain separate strings. The adapter performs no interpolation or pars
 | Total argument bytes | 65,536 |
 | Handler output | 1 MiB |
 
-NUL-containing arguments are rejected. Identifier values use ASCII alphanumeric characters plus `.`, `_`, `:`, and `-`. Errors never include route names, arguments, handler details, or output.
+NUL-containing arguments are rejected. Identifier values use ASCII alphanumeric characters plus `.`, `_`, `:`, and `-`. Errors never include route names, arguments, handler details, or output. The adapter recalculates remaining wall time immediately before handler invocation, so approval waits cannot reset the Task deadline. It preserves only the typed `BudgetExceeded` handler category so the Agent can record the existing stable failure code; every other handler failure remains redacted as `HandlerFailed`.
 
 ## Security boundary
 
@@ -49,6 +50,6 @@ The Tool Adapter is not an operating-system sandbox. Registered handlers are tru
 - preventing direct access to capabilities not represented by the Task;
 - keeping sensitive output out of logs and untrusted responses.
 
-The experimental [Process Adapter](process-adapter.md) supplies a constrained child-process handler with an explicit executable, validated argument array, cleared environment, null standard streams, and a direct-child timeout. It does not yet provide principal separation or operating-system isolation.
+The experimental [Process Adapter](process-adapter.md) supplies a constrained child-process handler with an explicit executable, validated argument array, cleared environment, null standard streams, and a Task wall-time boundary. Its Linux Bubblewrap path can bind the Task Budget to a matching cgroup, but it does not yet provide principal separation or complete operating-system Capability enforcement. See [ADR-0011](adr/0011-bind-task-budget-to-process-execution.md).
 
 Production out-of-process handlers must run under a separate operating-system principal or sandbox, receive no daemon control socket, use explicit executable paths and argument arrays, and enforce CPU, memory, time, file-descriptor, descendant-process, and network limits.

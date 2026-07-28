@@ -13,7 +13,7 @@ use aios_adapter_tool::{
     MAX_ARGUMENT_BYTES, MAX_ARGUMENTS, MAX_IDENTIFIER_BYTES, MAX_TOTAL_ARGUMENT_BYTES,
     ToolAdapterError, ToolCatalog, ToolExecutionGate, ToolOutput,
 };
-use aios_core::DenialReason;
+use aios_core::{DenialReason, ErrorCode};
 use aios_runtime::{
     ApprovalId, ApprovalRequest, EventStore, ExecutionError, ExecutionOutcome, SupervisorError,
     TaskId, TaskSupervisor,
@@ -337,6 +337,10 @@ impl<M: ModelAdapter> AgentRuntime<M> {
                 self.drive(supervisor)
             }
             Err(ExecutionError::Supervisor(error)) => Err(AgentError::Supervisor(error)),
+            Err(ExecutionError::Adapter(ToolAdapterError::BudgetExceeded)) => {
+                self.fail_budget_active(supervisor, task_id)?;
+                Err(AgentError::BudgetExceeded)
+            }
             Err(ExecutionError::Adapter(_) | ExecutionError::OperationNotFound) => {
                 self.fail_active(supervisor, task_id)?;
                 Err(AgentError::ToolFailed)
@@ -363,6 +367,13 @@ impl<M: ModelAdapter> AgentRuntime<M> {
         &mut self,
         supervisor: &mut TaskSupervisor<S>,
     ) -> Result<usize, AgentError> {
+        if let Some(task_id) = self.active.as_ref().map(|active| active.task_id)
+            && supervisor.wall_time_exceeded(task_id)?
+        {
+            self.fail_budget_active(supervisor, task_id)?;
+            self.tool_gate.expire(supervisor).map_err(map_tool_error)?;
+            return Err(AgentError::BudgetExceeded);
+        }
         let expired = self.tool_gate.expire(supervisor).map_err(map_tool_error)?;
         if self.active.as_ref().is_some_and(|active| {
             supervisor
@@ -410,6 +421,14 @@ impl<M: ModelAdapter> AgentRuntime<M> {
                 .as_ref()
                 .map(|active| (active.task_id, active.next_step))
                 .ok_or(AgentError::InvalidState)?;
+            if supervisor
+                .execution_context(task_id)?
+                .remaining_wall_time()
+                .is_zero()
+            {
+                self.fail_budget_active(supervisor, task_id)?;
+                return Err(AgentError::BudgetExceeded);
+            }
             if next_step > self.config.max_steps {
                 self.fail_active(supervisor, task_id)?;
                 return Err(AgentError::StepLimitExceeded);
@@ -432,6 +451,14 @@ impl<M: ModelAdapter> AgentRuntime<M> {
                     }
                 }
             };
+            if supervisor
+                .execution_context(task_id)?
+                .remaining_wall_time()
+                .is_zero()
+            {
+                self.fail_budget_active(supervisor, task_id)?;
+                return Err(AgentError::BudgetExceeded);
+            }
             self.active
                 .as_mut()
                 .ok_or(AgentError::InvalidState)?
@@ -479,6 +506,10 @@ impl<M: ModelAdapter> AgentRuntime<M> {
                             self.active = None;
                             return Err(AgentError::Supervisor(error));
                         }
+                        Err(ExecutionError::Adapter(ToolAdapterError::BudgetExceeded)) => {
+                            self.fail_budget_active(supervisor, task_id)?;
+                            return Err(AgentError::BudgetExceeded);
+                        }
                         Err(ExecutionError::Adapter(_) | ExecutionError::OperationNotFound) => {
                             self.fail_active(supervisor, task_id)?;
                             return Err(AgentError::ToolFailed);
@@ -506,6 +537,16 @@ impl<M: ModelAdapter> AgentRuntime<M> {
         supervisor.fail(task_id)?;
         Ok(())
     }
+
+    fn fail_budget_active<S: EventStore>(
+        &mut self,
+        supervisor: &mut TaskSupervisor<S>,
+        task_id: TaskId,
+    ) -> Result<(), AgentError> {
+        self.active = None;
+        supervisor.fail_budget_exceeded(task_id)?;
+        Ok(())
+    }
 }
 
 /// Result of driving a Task as far as possible without an external approval decision.
@@ -524,7 +565,25 @@ pub enum AgentError {
     StepLimitExceeded,
     ModelFailed,
     ToolFailed,
+    BudgetExceeded,
     Supervisor(SupervisorError),
+}
+
+impl AgentError {
+    #[must_use]
+    pub const fn code(&self) -> Option<ErrorCode> {
+        match self {
+            Self::BudgetExceeded => Some(ErrorCode::BudgetExceeded),
+            Self::InvalidConfig
+            | Self::CapacityExceeded
+            | Self::InvalidState
+            | Self::InvalidDecision
+            | Self::StepLimitExceeded
+            | Self::ModelFailed
+            | Self::ToolFailed
+            | Self::Supervisor(_) => None,
+        }
+    }
 }
 
 impl fmt::Debug for AgentError {
@@ -543,6 +602,7 @@ impl Display for AgentError {
             Self::StepLimitExceeded => "Agent step limit exceeded",
             Self::ModelFailed => "model adapter failed",
             Self::ToolFailed => "Tool execution failed",
+            Self::BudgetExceeded => "Task Budget exceeded",
             Self::Supervisor(_) => "Task supervision failed",
         };
         formatter.write_str(message)
@@ -560,6 +620,7 @@ impl From<SupervisorError> for AgentError {
 fn map_tool_error(error: ExecutionError<ToolAdapterError>) -> AgentError {
     match error {
         ExecutionError::Supervisor(error) => AgentError::Supervisor(error),
+        ExecutionError::Adapter(ToolAdapterError::BudgetExceeded) => AgentError::BudgetExceeded,
         ExecutionError::Adapter(_) | ExecutionError::OperationNotFound => AgentError::ToolFailed,
     }
 }
@@ -600,8 +661,12 @@ mod tests {
     use std::time::Duration;
 
     use aios_adapter_tool::{ToolAdapterBuilder, ToolFailure, ToolOutput};
-    use aios_core::{ApprovalPolicy, Budget, CapabilitySet, NetworkPolicy, TaskSpec, TaskState};
-    use aios_runtime::{ApprovalId, InMemoryEventStore, SubmitResult, TaskSupervisor};
+    use aios_core::{
+        ApprovalPolicy, Budget, CapabilitySet, ErrorCode, NetworkPolicy, TaskSpec, TaskState,
+    };
+    use aios_runtime::{
+        ApprovalId, InMemoryEventStore, SubmitResult, TaskEventKind, TaskSupervisor,
+    };
 
     use super::{
         AgentConfig, AgentError, AgentRunOutcome, AgentRuntime, MAX_ARGUMENT_BYTES,
@@ -874,6 +939,154 @@ mod tests {
             supervisor.get(task_id).expect("Task exists").state,
             TaskState::Succeeded
         );
+    }
+
+    #[test]
+    fn budget_exhaustion_stops_the_agent_and_records_the_stable_failure() {
+        let model = ScriptedModelAdapter::new(vec![
+            ModelDecision::call_tool("run_tests".to_owned(), Vec::new())
+                .expect("valid Tool decision"),
+        ])
+        .expect("valid script");
+        let mut builder = ToolAdapterBuilder::default();
+        builder
+            .register("run_tests", "test_runner", "test.run", |_| {
+                Err(ToolFailure::budget_exceeded())
+            })
+            .expect("register Tool");
+        let (catalog, gate) = builder.build();
+        let mut runtime = AgentRuntime::new(model, catalog, gate, AgentConfig::default());
+        let mut supervisor = TaskSupervisor::default();
+        let task_id = submit(&mut supervisor, "agent-budget", &[], &["test_runner"]);
+
+        let error = match runtime.start(&mut supervisor, task_id) {
+            Err(error) => error,
+            Ok(_) => panic!("Task Budget must stop execution"),
+        };
+
+        assert!(matches!(&error, AgentError::BudgetExceeded));
+        assert_eq!(error.code(), Some(ErrorCode::BudgetExceeded));
+        assert_eq!(
+            supervisor.get(task_id).expect("Task exists").state,
+            TaskState::Failed
+        );
+        let events = supervisor.events(task_id, 0).expect("list events");
+        assert!(events.iter().any(|event| {
+            event.kind
+                == TaskEventKind::TaskFailed {
+                    code: ErrorCode::BudgetExceeded,
+                }
+        }));
+        assert_eq!(runtime.active_task(), None);
+    }
+
+    #[test]
+    fn approved_operation_cannot_continue_after_budget_exhaustion() {
+        let model = ScriptedModelAdapter::new(vec![
+            ModelDecision::call_tool("run_tests".to_owned(), Vec::new())
+                .expect("valid Tool decision"),
+        ])
+        .expect("valid script");
+        let mut builder = ToolAdapterBuilder::default();
+        builder
+            .register("run_tests", "test_runner", "test.run", |_| {
+                Err(ToolFailure::budget_exceeded())
+            })
+            .expect("register Tool");
+        let (catalog, gate) = builder.build();
+        let mut runtime = AgentRuntime::new(model, catalog, gate, AgentConfig::default());
+        let mut supervisor = TaskSupervisor::default();
+        let task_id = submit(
+            &mut supervisor,
+            "agent-approved-budget",
+            &["test.run"],
+            &["test_runner"],
+        );
+        let AgentRunOutcome::WaitingApproval(request) = runtime
+            .start(&mut supervisor, task_id)
+            .expect("wait for approval")
+        else {
+            panic!("expected approval wait");
+        };
+
+        assert!(matches!(
+            runtime.approve_and_resume(&mut supervisor, request.approval_id),
+            Err(AgentError::BudgetExceeded)
+        ));
+        assert_eq!(
+            supervisor.get(task_id).expect("Task exists").state,
+            TaskState::Failed
+        );
+        assert_eq!(runtime.active_task(), None);
+    }
+
+    #[test]
+    fn deadline_monitor_fails_a_task_while_approval_is_waiting() {
+        let seen = Rc::new(RefCell::new(Vec::new()));
+        let (catalog, gate) = tools(Rc::clone(&seen));
+        let model = ScriptedModelAdapter::new(vec![
+            ModelDecision::call_tool("run_tests".to_owned(), Vec::new())
+                .expect("valid Tool decision"),
+        ])
+        .expect("valid script");
+        let mut runtime = AgentRuntime::new(model, catalog, gate, AgentConfig::default());
+        let mut supervisor = TaskSupervisor::default();
+        let mut spec = task("agent-waiting-budget", &["test.run"], &["test_runner"]);
+        spec.budget.wall_time_seconds = 1;
+        let SubmitResult::Accepted(task) = supervisor.submit(spec).expect("submit Task") else {
+            panic!("expected accepted Task");
+        };
+        assert!(matches!(
+            runtime.start(&mut supervisor, task.task_id),
+            Ok(AgentRunOutcome::WaitingApproval(_))
+        ));
+        std::thread::sleep(Duration::from_millis(1_100));
+
+        assert!(matches!(
+            runtime.expire(&mut supervisor),
+            Err(AgentError::BudgetExceeded)
+        ));
+        assert!(seen.borrow().is_empty());
+        assert_eq!(
+            supervisor.get(task.task_id).expect("Task exists").state,
+            TaskState::Failed
+        );
+        assert_eq!(runtime.active_task(), None);
+    }
+
+    #[test]
+    fn slow_tool_cannot_reset_wall_time_between_model_turns() {
+        let model = ScriptedModelAdapter::new(vec![
+            ModelDecision::call_tool("run_tests".to_owned(), Vec::new())
+                .expect("valid Tool decision"),
+            ModelDecision::finish("must not complete".to_owned()).expect("valid final decision"),
+        ])
+        .expect("valid script");
+        let mut builder = ToolAdapterBuilder::default();
+        builder
+            .register("run_tests", "test_runner", "test.run", |_| {
+                std::thread::sleep(Duration::from_millis(1_100));
+                ToolOutput::from_text("late".to_owned()).map_err(|_| ToolFailure::new())
+            })
+            .expect("register Tool");
+        let (catalog, gate) = builder.build();
+        let mut runtime = AgentRuntime::new(model, catalog, gate, AgentConfig::default());
+        let mut supervisor = TaskSupervisor::default();
+        let mut spec = task("agent-wall-time", &[], &["test_runner"]);
+        spec.budget.wall_time_seconds = 1;
+        let SubmitResult::Accepted(task) = supervisor.submit(spec).expect("submit Task") else {
+            panic!("expected accepted Task");
+        };
+
+        assert!(matches!(
+            runtime.start(&mut supervisor, task.task_id),
+            Err(AgentError::BudgetExceeded)
+        ));
+        assert_eq!(
+            supervisor.get(task.task_id).expect("Task exists").state,
+            TaskState::Failed
+        );
+        assert_eq!(runtime.active_task(), None);
     }
 
     #[test]

@@ -1,11 +1,11 @@
 use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt::{self, Display, Formatter};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use aios_core::{
-    CapabilityPolicy, CapabilityRequest, DenialReason, ErrorCode, FileAccess, NetworkTransport,
-    PolicyDecision, StateTransitionError, TaskSpec, TaskState, ValidationErrors,
+    Budget, CapabilityPolicy, CapabilityRequest, DenialReason, ErrorCode, FileAccess,
+    NetworkTransport, PolicyDecision, StateTransitionError, TaskSpec, TaskState, ValidationErrors,
 };
 
 use crate::{
@@ -19,6 +19,7 @@ const DEFAULT_MAX_TASKS: usize = 10_000;
 struct TaskRecord {
     spec: TaskSpec,
     state: TaskState,
+    started_at: Option<Instant>,
 }
 
 #[derive(Eq, PartialEq)]
@@ -132,6 +133,32 @@ impl TaskExecutionInput {
     #[must_use]
     pub fn capability_tools(&self) -> &[String] {
         &self.capability_tools
+    }
+}
+
+/// Task identity and validated resource limits supplied only to trusted execution adapters.
+///
+/// This type intentionally does not implement `Debug` or serialization.
+pub struct TaskExecutionContext {
+    task_id: TaskId,
+    budget: Budget,
+    started_at: Instant,
+}
+
+impl TaskExecutionContext {
+    #[must_use]
+    pub const fn task_id(&self) -> TaskId {
+        self.task_id
+    }
+
+    #[must_use]
+    pub const fn budget(&self) -> &Budget {
+        &self.budget
+    }
+
+    #[must_use]
+    pub fn remaining_wall_time(&self) -> Duration {
+        Duration::from_secs(self.budget.wall_time_seconds).saturating_sub(self.started_at.elapsed())
     }
 }
 
@@ -374,7 +401,14 @@ impl<S: EventStore> TaskSupervisor<S> {
 
         self.event_store.append_batch(task_id, &event_kinds)?;
         let idempotency_key = spec.idempotency_key.clone();
-        self.tasks.insert(task_id, TaskRecord { spec, state });
+        self.tasks.insert(
+            task_id,
+            TaskRecord {
+                spec,
+                state,
+                started_at: None,
+            },
+        );
         self.idempotency_index.insert(idempotency_key, task_id);
 
         let task = TaskSnapshot { task_id, state };
@@ -391,7 +425,13 @@ impl<S: EventStore> TaskSupervisor<S> {
     }
 
     pub fn start(&mut self, task_id: TaskId) -> Result<(), SupervisorError> {
-        self.transition(task_id, TaskState::Running)
+        self.transition(task_id, TaskState::Running)?;
+        let started_at = Instant::now();
+        self.tasks
+            .get_mut(&task_id)
+            .ok_or(SupervisorError::TaskNotFound)?
+            .started_at = Some(started_at);
+        Ok(())
     }
 
     /// Starts one queued Task and releases its goal to trusted execution code only after audit.
@@ -410,6 +450,42 @@ impl<S: EventStore> TaskSupervisor<S> {
             goal,
             capability_tools,
         })
+    }
+
+    /// Returns immutable Task identity and Budget data for a running trusted adapter call.
+    pub fn execution_context(
+        &self,
+        task_id: TaskId,
+    ) -> Result<TaskExecutionContext, SupervisorError> {
+        let record = self
+            .tasks
+            .get(&task_id)
+            .ok_or(SupervisorError::TaskNotFound)?;
+        if record.state != TaskState::Running {
+            return Err(SupervisorError::TaskNotRunning);
+        }
+        let started_at = record.started_at.ok_or(SupervisorError::TaskNotRunning)?;
+        Ok(TaskExecutionContext {
+            task_id,
+            budget: record.spec.budget.clone(),
+            started_at,
+        })
+    }
+
+    /// Reports whether an executing or approval-waiting Task has exhausted its wall-time Budget.
+    pub fn wall_time_exceeded(&self, task_id: TaskId) -> Result<bool, SupervisorError> {
+        let record = self
+            .tasks
+            .get(&task_id)
+            .ok_or(SupervisorError::TaskNotFound)?;
+        if !matches!(
+            record.state,
+            TaskState::Running | TaskState::WaitingApproval
+        ) {
+            return Err(SupervisorError::TaskNotRunning);
+        }
+        let started_at = record.started_at.ok_or(SupervisorError::TaskNotRunning)?;
+        Ok(started_at.elapsed() >= Duration::from_secs(record.spec.budget.wall_time_seconds))
     }
 
     /// Evaluates one exact operation and records the decision before returning it.
@@ -704,6 +780,21 @@ impl<S: EventStore> TaskSupervisor<S> {
         self.transition(task_id, TaskState::Failed)
     }
 
+    /// Fails a running Task after a hard resource limit and records the stable failure category.
+    pub fn fail_budget_exceeded(&mut self, task_id: TaskId) -> Result<(), SupervisorError> {
+        let current = self
+            .task_state(task_id)
+            .ok_or(SupervisorError::TaskNotFound)?;
+        let mut proposed = current;
+        proposed.transition_to(TaskState::Failed)?;
+        self.apply_transition_with_failure(
+            task_id,
+            current,
+            TaskState::Failed,
+            Some(ErrorCode::BudgetExceeded),
+        )
+    }
+
     /// Cancels a non-terminal task and records one event. Repeated cancellation is a no-op.
     pub fn cancel(&mut self, task_id: TaskId) -> Result<bool, SupervisorError> {
         let current = self
@@ -744,9 +835,22 @@ impl<S: EventStore> TaskSupervisor<S> {
         current: TaskState,
         next: TaskState,
     ) -> Result<(), SupervisorError> {
+        self.apply_transition_with_failure(task_id, current, next, None)
+    }
+
+    fn apply_transition_with_failure(
+        &mut self,
+        task_id: TaskId,
+        current: TaskState,
+        next: TaskState,
+        failure: Option<ErrorCode>,
+    ) -> Result<(), SupervisorError> {
         let mut event_kinds = Vec::new();
         if next.is_terminal() {
             event_kinds.extend(self.revocation_events(task_id));
+        }
+        if let Some(code) = failure {
+            event_kinds.push(TaskEventKind::TaskFailed { code });
         }
         event_kinds.push(TaskEventKind::StateTransitioned {
             from: current,
@@ -819,12 +923,12 @@ mod tests {
     use std::time::Duration;
 
     use aios_core::{
-        ApprovalPolicy, Budget, CapabilityRequest, CapabilitySet, FileAccess, FileCapability,
-        NetworkDestination, NetworkPolicy, NetworkTransport, TaskSpec, TaskState,
+        ApprovalPolicy, Budget, CapabilityRequest, CapabilitySet, ErrorCode, FileAccess,
+        FileCapability, NetworkDestination, NetworkPolicy, NetworkTransport, TaskSpec, TaskState,
     };
 
     use super::{OperationAuthorization, SubmitResult, SupervisorError, TaskSupervisor};
-    use crate::{InMemoryEventStore, TaskEventKind};
+    use crate::{EventStoreError, InMemoryEventStore, TaskEventKind};
 
     fn valid_task() -> TaskSpec {
         TaskSpec {
@@ -877,6 +981,80 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![1, 2, 3]
         );
+    }
+
+    #[test]
+    fn releases_validated_budget_only_for_running_execution() {
+        let mut supervisor = TaskSupervisor::default();
+        let spec = valid_task();
+        let expected_budget = spec.budget.clone();
+        let task_id = accepted_task_id(supervisor.submit(spec).expect("submit task"));
+
+        assert!(matches!(
+            supervisor.execution_context(task_id),
+            Err(SupervisorError::TaskNotRunning)
+        ));
+        supervisor.start(task_id).expect("start task");
+
+        let context = supervisor
+            .execution_context(task_id)
+            .expect("release execution context");
+        assert_eq!(context.task_id(), task_id);
+        assert!(context.budget() == &expected_budget);
+        assert!(!context.remaining_wall_time().is_zero());
+        assert!(
+            context.remaining_wall_time() <= Duration::from_secs(expected_budget.wall_time_seconds)
+        );
+    }
+
+    #[test]
+    fn budget_exhaustion_records_failure_before_terminal_state() {
+        let mut supervisor = TaskSupervisor::default();
+        let task_id = accepted_task_id(supervisor.submit(valid_task()).expect("submit task"));
+        supervisor.start(task_id).expect("start task");
+
+        supervisor
+            .fail_budget_exceeded(task_id)
+            .expect("fail exhausted task");
+
+        assert_eq!(
+            supervisor.get(task_id).expect("task exists").state,
+            TaskState::Failed
+        );
+        let events = supervisor.events(task_id, 0).expect("list events");
+        assert_eq!(
+            events[events.len() - 2].kind,
+            TaskEventKind::TaskFailed {
+                code: ErrorCode::BudgetExceeded,
+            }
+        );
+        assert_eq!(
+            events.last().expect("terminal transition").kind,
+            TaskEventKind::StateTransitioned {
+                from: TaskState::Running,
+                to: TaskState::Failed,
+            }
+        );
+    }
+
+    #[test]
+    fn budget_failure_audit_is_atomic() {
+        let store = InMemoryEventStore::new(5).expect("positive capacity");
+        let mut supervisor = TaskSupervisor::with_max_tasks(store, 1).expect("bounded supervisor");
+        let task_id = accepted_task_id(supervisor.submit(valid_task()).expect("submit task"));
+        supervisor.start(task_id).expect("start task");
+
+        assert!(matches!(
+            supervisor.fail_budget_exceeded(task_id),
+            Err(SupervisorError::EventStore(
+                EventStoreError::CapacityExceeded
+            ))
+        ));
+        assert_eq!(
+            supervisor.get(task_id).expect("task exists").state,
+            TaskState::Running
+        );
+        assert_eq!(supervisor.events(task_id, 0).expect("list events").len(), 4);
     }
 
     #[test]

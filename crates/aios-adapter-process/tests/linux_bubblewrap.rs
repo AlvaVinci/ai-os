@@ -16,7 +16,12 @@ use aios_adapter_process::{
     ProcessToolBuilder, ProcessToolHandler, TaskCgroup, TaskScratch, TaskScratchManager,
     VerifiedRootFilesystem, build_minimal_root_filesystem,
 };
-use aios_runtime::TaskId;
+use aios_adapter_tool::ToolAdapterBuilder;
+use aios_agent::{AgentConfig, AgentError, AgentRuntime, ModelDecision, ScriptedModelAdapter};
+use aios_core::{
+    ApprovalPolicy, Budget, CapabilitySet, ErrorCode, NetworkPolicy, TaskSpec, TaskState,
+};
+use aios_runtime::{SubmitResult, TaskEventKind, TaskId, TaskSupervisor};
 
 const TEST_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_HTTP_REQUEST_BYTES: usize = 8 * 1_024;
@@ -41,6 +46,10 @@ struct SandboxFixture {
 
 impl SandboxFixture {
     fn new(label: &str) -> Self {
+        Self::new_for_task(label, TaskId::new())
+    }
+
+    fn new_for_task(label: &str, task_id: TaskId) -> Self {
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("system time must follow Unix epoch")
@@ -64,7 +73,7 @@ impl SandboxFixture {
             .expect("create Task scratch root");
         let task_scratch = TaskScratchManager::new(&scratch_root)
             .expect("open Task scratch root")
-            .create(TaskId::new())
+            .create(task_id)
             .expect("create Task scratch directory");
 
         let bubblewrap = required_executable("AIOS_BWRAP_PATH");
@@ -397,6 +406,81 @@ fn linux_sandbox_stops_at_resident_memory_limit() {
 
     drop(handler);
     task_cgroup.finish().expect("remove memory-limited cgroup");
+    assert!(!cgroup_directory.exists());
+}
+
+#[test]
+#[ignore = "requires Linux Bubblewrap, static BusyBox, and a delegated cgroup v2 subtree"]
+fn linux_agent_enforces_task_budget_and_records_terminal_failure() {
+    let budget = Budget {
+        wall_time_seconds: 1,
+        memory_bytes: 256 * MEBIBYTE,
+        max_parallel_agents: 1,
+    };
+    let mut supervisor = TaskSupervisor::default();
+    let SubmitResult::Accepted(task) = supervisor
+        .submit(TaskSpec {
+            idempotency_key: "linux-task-budget".to_owned(),
+            goal: "Stop one CPU-bound Tool at the Task Budget".to_owned(),
+            capabilities: CapabilitySet {
+                filesystem: Vec::new(),
+                network: NetworkPolicy::Deny,
+                tools: vec!["process_runner".to_owned()],
+            },
+            budget: budget.clone(),
+            approval: ApprovalPolicy {
+                required_for: Vec::new(),
+            },
+        })
+        .expect("submit Task")
+    else {
+        panic!("expected accepted Task");
+    };
+    let fixture = SandboxFixture::new_for_task("task-budget-integration", task.task_id);
+    let task_cgroup = fixture.create_task_cgroup(
+        CgroupResourceBudget::from_task_budget(&budget).expect("derive Task cgroup budget"),
+    );
+    let cgroup_directory = task_cgroup.directory().to_owned();
+    let handler = fixture
+        .sandbox_builder(&["sh", "-c", "while :; do :; done"], TEST_TIMEOUT)
+        .task_cgroup(&task_cgroup, cgroup_launcher())
+        .build()
+        .expect("build Task-budgeted handler");
+    let mut tool_builder = ToolAdapterBuilder::default();
+    tool_builder
+        .register("run_process", "process_runner", "process.run", handler)
+        .expect("register Process Tool");
+    let (catalog, gate) = tool_builder.build();
+    let model = ScriptedModelAdapter::new(vec![
+        ModelDecision::call_tool("run_process".to_owned(), Vec::new())
+            .expect("valid Tool decision"),
+    ])
+    .expect("valid model script");
+    let mut runtime = AgentRuntime::new(model, catalog, gate, AgentConfig::default());
+
+    assert!(matches!(
+        runtime.start(&mut supervisor, task.task_id),
+        Err(AgentError::BudgetExceeded)
+    ));
+    assert_eq!(
+        supervisor.get(task.task_id).expect("Task exists").state,
+        TaskState::Failed
+    );
+    assert!(
+        supervisor
+            .events(task.task_id, 0)
+            .expect("list Task Events")
+            .iter()
+            .any(|event| {
+                event.kind
+                    == TaskEventKind::TaskFailed {
+                        code: ErrorCode::BudgetExceeded,
+                    }
+            })
+    );
+
+    drop(runtime);
+    task_cgroup.finish().expect("remove Task cgroup");
     assert!(!cgroup_directory.exists());
 }
 

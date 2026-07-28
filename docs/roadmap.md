@@ -57,7 +57,8 @@ Completing this phase alone does not complete v0.1. Resource enforcement and the
 
 Manage resource contention between Tasks and models.
 
-- enforce CPU, RAM, and wall-time limits
+- [x] enforce Task-derived CPU, RAM, and wall-time limits for isolated Process Tools
+- [ ] extend resource limits to model inference and concurrent Task scheduling
 - observe GPU and VRAM usage
 - manage priority and concurrency
 - control model loading, sharing, and release

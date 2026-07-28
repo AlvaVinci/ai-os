@@ -12,7 +12,7 @@ use std::time::Duration;
 use aios_core::CapabilityRequest;
 use aios_runtime::{
     ApprovalId, EventStore, Executed, ExecutionAdapter, ExecutionError, ExecutionGate,
-    ExecutionOutcome, GuardedOperation, TaskId, TaskSnapshot, TaskSupervisor,
+    ExecutionOutcome, GuardedOperation, TaskExecutionContext, TaskId, TaskSnapshot, TaskSupervisor,
 };
 
 pub const DEFAULT_MAX_ROUTES: usize = 256;
@@ -38,6 +38,7 @@ pub struct ToolOperation {
     capability_tool: String,
     action: String,
     arguments: Vec<String>,
+    execution_context: Option<TaskExecutionContext>,
 }
 
 impl GuardedOperation for ToolOperation {
@@ -77,12 +78,30 @@ impl ToolOutput {
 
 /// Redacted failure returned by a Tool handler.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct ToolFailure;
+enum ToolFailureKind {
+    #[default]
+    Failed,
+    BudgetExceeded,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct ToolFailure {
+    kind: ToolFailureKind,
+}
 
 impl ToolFailure {
     #[must_use]
     pub const fn new() -> Self {
-        Self
+        Self {
+            kind: ToolFailureKind::Failed,
+        }
+    }
+
+    #[must_use]
+    pub const fn budget_exceeded() -> Self {
+        Self {
+            kind: ToolFailureKind::BudgetExceeded,
+        }
     }
 }
 
@@ -97,6 +116,14 @@ impl Error for ToolFailure {}
 /// In-process handler registered by trusted startup code.
 pub trait ToolHandler {
     fn execute(&mut self, arguments: Vec<String>) -> Result<ToolOutput, ToolFailure>;
+
+    fn execute_for_task(
+        &mut self,
+        _context: &TaskExecutionContext,
+        arguments: Vec<String>,
+    ) -> Result<ToolOutput, ToolFailure> {
+        self.execute(arguments)
+    }
 }
 
 impl<F> ToolHandler for F
@@ -119,6 +146,7 @@ pub enum ToolAdapterError {
     InvalidArguments,
     ScopeMismatch,
     HandlerFailed,
+    BudgetExceeded,
     OutputTooLarge,
 }
 
@@ -133,6 +161,7 @@ impl Display for ToolAdapterError {
             Self::InvalidArguments => "Tool arguments are invalid",
             Self::ScopeMismatch => "Tool operation does not match the registered scope",
             Self::HandlerFailed => "Tool handler failed",
+            Self::BudgetExceeded => "Tool execution budget exceeded",
             Self::OutputTooLarge => "Tool output exceeds the configured limit",
         };
         formatter.write_str(message)
@@ -242,6 +271,7 @@ impl ToolCatalog {
             capability_tool: definition.capability_tool.clone(),
             action: definition.action.clone(),
             arguments,
+            execution_context: None,
         })
     }
 
@@ -281,9 +311,14 @@ impl ToolExecutionGate {
         &mut self,
         supervisor: &mut TaskSupervisor<S>,
         task_id: TaskId,
-        operation: ToolOperation,
+        mut operation: ToolOperation,
         approval_ttl: Duration,
     ) -> Result<ExecutionOutcome<ToolOutput>, ExecutionError<ToolAdapterError>> {
+        operation.execution_context = Some(
+            supervisor
+                .execution_context(task_id)
+                .map_err(ExecutionError::Supervisor)?,
+        );
         self.gate
             .request(supervisor, task_id, operation, approval_ttl)
     }
@@ -331,6 +366,13 @@ impl ExecutionAdapter<ToolOperation> for ToolAdapter {
 
     fn execute(&mut self, operation: ToolOperation) -> Result<Self::Output, Self::Error> {
         validate_arguments(&operation.arguments)?;
+        let context = operation
+            .execution_context
+            .as_ref()
+            .ok_or(ToolAdapterError::ScopeMismatch)?;
+        if context.remaining_wall_time().is_zero() {
+            return Err(ToolAdapterError::BudgetExceeded);
+        }
         let definition = self
             .definitions
             .get(&operation.route)
@@ -345,8 +387,11 @@ impl ExecutionAdapter<ToolOperation> for ToolAdapter {
             .get_mut(&operation.route)
             .ok_or(ToolAdapterError::RouteNotFound)?;
         handler
-            .execute(operation.arguments)
-            .map_err(|_| ToolAdapterError::HandlerFailed)
+            .execute_for_task(context, operation.arguments)
+            .map_err(|failure| match failure.kind {
+                ToolFailureKind::Failed => ToolAdapterError::HandlerFailed,
+                ToolFailureKind::BudgetExceeded => ToolAdapterError::BudgetExceeded,
+            })
     }
 }
 
@@ -381,6 +426,7 @@ fn validate_arguments(arguments: &[String]) -> Result<(), ToolAdapterError> {
 mod tests {
     use std::cell::RefCell;
     use std::rc::Rc;
+    use std::thread;
     use std::time::Duration;
 
     use aios_core::{ApprovalPolicy, Budget, CapabilitySet, NetworkPolicy, TaskSpec};
@@ -587,6 +633,70 @@ mod tests {
 
         assert_eq!(error.to_string(), "adapter execution failed");
         assert_eq!(format!("{error:?}"), "adapter execution failed");
+    }
+
+    #[test]
+    fn preserves_only_the_budget_exceeded_handler_category() {
+        let mut builder = ToolAdapterBuilder::default();
+        builder
+            .register("budget", "test_runner", "test.run", |_| {
+                Err(ToolFailure::budget_exceeded())
+            })
+            .expect("register Tool");
+        let (catalog, mut gate) = builder.build();
+        let (mut supervisor, task_id) = running_supervisor(&[], &["test_runner"]);
+        let operation = catalog.prepare("budget", Vec::new()).expect("prepare Tool");
+
+        assert!(matches!(
+            gate.request(&mut supervisor, task_id, operation, Duration::from_secs(30)),
+            Err(ExecutionError::Adapter(ToolAdapterError::BudgetExceeded))
+        ));
+        assert_eq!(
+            supervisor.get(task_id).expect("Task exists").state,
+            aios_core::TaskState::Running
+        );
+    }
+
+    #[test]
+    fn approval_wait_cannot_reset_the_task_wall_time() {
+        let called = Rc::new(RefCell::new(false));
+        let called_by_handler = Rc::clone(&called);
+        let mut builder = ToolAdapterBuilder::default();
+        builder
+            .register("delayed", "test_runner", "test.run", move |_| {
+                *called_by_handler.borrow_mut() = true;
+                ToolOutput::from_text("unexpected".to_owned()).map_err(|_| ToolFailure::new())
+            })
+            .expect("register Tool");
+        let (catalog, mut gate) = builder.build();
+        let mut spec = task(&["test.run"], &["test_runner"]);
+        spec.budget.wall_time_seconds = 1;
+        let mut supervisor = TaskSupervisor::default();
+        let SubmitResult::Accepted(task) = supervisor.submit(spec).expect("submit Task") else {
+            panic!("expected accepted Task");
+        };
+        supervisor.start(task.task_id).expect("start Task");
+        let operation = catalog
+            .prepare("delayed", Vec::new())
+            .expect("prepare Tool");
+        let ExecutionOutcome::ApprovalRequired(request) = gate
+            .request(
+                &mut supervisor,
+                task.task_id,
+                operation,
+                Duration::from_secs(30),
+            )
+            .expect("request approval")
+        else {
+            panic!("expected approval request");
+        };
+        thread::sleep(Duration::from_millis(1_100));
+
+        assert!(matches!(
+            gate.approve_and_execute(&mut supervisor, request.approval_id),
+            Err(ExecutionError::Adapter(ToolAdapterError::BudgetExceeded))
+        ));
+        assert!(!*called.borrow());
     }
 
     #[test]

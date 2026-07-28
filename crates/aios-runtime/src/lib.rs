@@ -20,6 +20,6 @@ pub use execution::{
     Executed, ExecutionAdapter, ExecutionError, ExecutionGate, ExecutionOutcome, GuardedOperation,
 };
 pub use supervisor::{
-    OperationAuthorization, SubmitResult, SupervisorError, TaskExecutionInput, TaskSnapshot,
-    TaskSupervisor,
+    OperationAuthorization, SubmitResult, SupervisorError, TaskExecutionContext,
+    TaskExecutionInput, TaskSnapshot, TaskSupervisor,
 };
