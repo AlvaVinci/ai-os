@@ -58,6 +58,7 @@ Completing this phase alone does not complete v0.1. Resource enforcement and the
 Manage resource contention between Tasks and models.
 
 - [x] enforce Task-derived CPU, RAM, and wall-time limits for isolated Process Tools
+- [x] reconcile recovered Task cgroups during fail-closed non-resumable daemon startup
 - [ ] extend resource limits to model inference and concurrent Task scheduling
 - observe GPU and VRAM usage
 - manage priority and concurrency

@@ -46,6 +46,8 @@ Trusted startup code is also responsible for creating an existing absolute scrat
 
 Resource enforcement requires a pre-provisioned delegated cgroup v2 root beneath `/sys/fs/cgroup` and an absolute installed `aios-cgroup-launch` path. The root must expose enabled `cpu` and `memory` controllers, contain no processes directly, and contain the runtime in a separate child cgroup. `CgroupV2Manager` rejects invalid topology, root replacement, missing controller files, and duplicate Task children. `CgroupResourceBudget::from_task_budget` maps `memory_bytes` exactly to `memory.max` and, until a separately versioned CPU field exists, conservatively uses `wall_time_seconds` as the cumulative CPU-time ceiling. The manager creates a Task-ID-scoped child, records its device and inode, disables swap, enables group OOM handling, and retains cumulative CPU accounting. The Task cgroup and Task scratch IDs must match before the builder accepts them. A Bubblewrap handler invoked through `ToolExecutionGate` additionally refuses to spawn unless the cgroup Task ID and derived limits exactly match the running Task context. The adapter rechecks cgroup identity and memory controls while running; the builder canonicalizes the launcher and rechecks its executable identity before every run.
 
+During non-resumable daemon startup, `CgroupV2Manager::reconcile_stale_task_cgroups` accepts only Task IDs reconstructed from the durable Event Store. For each exact existing `task-{TaskId}` child, it revalidates the delegated root and child identity, kills the complete group, waits for `populated 0`, and removes only that empty cgroup. It does not enumerate or recursively delete the delegated root. `aiosd --cgroup-root PATH` runs this cleanup after durable `RUNTIME_RESTARTED` recording and before accepting requests; any failure aborts startup. The root must be exclusive to that daemon/database configuration.
+
 Neither the root filesystem nor scratch root may contain daemon or approval sockets, event databases, host credentials, or unrelated user data. Scratch cleanup is deliberately not automatic: the runtime must first stop and reap the Task's process tree, then use a separately reviewed cleanup path. Dropping `TaskScratch` never recursively deletes Tool-controlled content.
 
 Build a minimal tree from a trusted static BusyBox executable and record the printed digest outside the output directory:
@@ -115,6 +117,7 @@ The `linux_bubblewrap` integration suite starts the real Bubblewrap executable w
 - memory-backed `/tmp` growth stops at the Task cgroup resident-memory ceiling;
 - a CPU-bound Process Tool run through the Agent derives its cgroup from the Task Budget, records terminal `BUDGET_EXCEEDED`, and stops further Agent work;
 - explicitly finished Task cgroups are empty and removable.
+- startup reconciliation kills and removes a recovered Task cgroup while preserving an unselected Task cgroup, and repeated reconciliation is idempotent.
 
 These tests are ignored by the default test command because they require Linux x86_64, Bubblewrap 0.8.0 or newer with `--disable-userns`, static BusyBox, enabled unprivileged user namespaces, seccomp filter support, and a delegated cgroup v2 subtree. The pinned Ubuntu 24.04 workflow verifies the required Bubblewrap option, loads a path-scoped AppArmor profile for `/usr/bin/bwrap`, and runs the test process inside a dedicated delegated cgroup subtree. It does not disable the system-wide unprivileged user namespace restriction. The workflow then runs the tests explicitly:
 
@@ -125,7 +128,7 @@ AIOS_CGROUP_ROOT=/sys/fs/cgroup/aios-ci \
 cargo test -p aios-adapter-process --test linux_bubblewrap --locked -- --ignored
 ```
 
-Passing this suite is evidence for the current content-addressed rootfs, Task scratch, deny-network launch, sealed seccomp deny policy, and Task Budget/Event-integrated cgroup resource boundary. It does not prove OS-backed rootfs immutability, Capability-derived mounts, destination-scoped networking, model/GPU resource enforcement, or the future approval API.
+Passing this suite is evidence for the current content-addressed rootfs, Task scratch, deny-network launch, sealed seccomp deny policy, Task Budget/Event-integrated cgroup resource boundary, and identifier-scoped stale-cgroup reconciliation. It does not prove OS-backed rootfs immutability, Capability-derived mounts, destination-scoped networking, model/GPU resource enforcement, cross-daemon cgroup-root locking, or the future approval API.
 
 ## Bounds
 
@@ -184,4 +187,4 @@ Executables registered in direct mode remain trusted. Argument policies in both 
 
 ## Next enforcement milestone
 
-With Task Budget enforcement and terminal `BUDGET_EXCEEDED` connected through the Linux Agent boundary, next reconcile stale Task cgroups safely during non-resumable daemon startup. OS-backed rootfs immutability, descriptor-bound Capability mounts, destination-scoped network brokering, model/GPU budgets, and workload-specific syscall allowlists remain required before release claims. See [ADR-0006](adr/0006-bubblewrap-process-isolation.md), [ADR-0007](adr/0007-task-scoped-scratch.md), [ADR-0008](adr/0008-content-addressed-rootfs.md), [ADR-0009](adr/0009-task-cgroup-v2-resource-boundary.md), [ADR-0010](adr/0010-sealed-seccomp-deny-policy.md), and [ADR-0011](adr/0011-bind-task-budget-to-process-execution.md).
+With identifier-scoped stale Task cgroup reconciliation connected to non-resumable startup, next bind filesystem Capabilities to descriptor-based mounts instead of trusted host paths. OS-backed rootfs immutability, safe Task scratch lifecycle, destination-scoped network brokering, model/GPU budgets, cross-daemon ownership locking, and workload-specific syscall allowlists remain required before release claims. See [ADR-0006](adr/0006-bubblewrap-process-isolation.md), [ADR-0007](adr/0007-task-scoped-scratch.md), [ADR-0008](adr/0008-content-addressed-rootfs.md), [ADR-0009](adr/0009-task-cgroup-v2-resource-boundary.md), [ADR-0010](adr/0010-sealed-seccomp-deny-policy.md), [ADR-0011](adr/0011-bind-task-budget-to-process-execution.md), and [ADR-0012](adr/0012-reconcile-stale-task-cgroups-on-startup.md).

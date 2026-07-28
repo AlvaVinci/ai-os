@@ -424,6 +424,14 @@ impl<S: EventStore> TaskSupervisor<S> {
             .map(|state| TaskSnapshot { task_id, state })
     }
 
+    /// Lists Task identifiers reconstructed from the persistent Event Store.
+    ///
+    /// Runtime owners may use this bounded identifier-only view during startup cleanup. It does
+    /// not expose or reconstruct Task input, model state, Tool operations, or approval authority.
+    pub fn recovered_task_ids(&self) -> impl Iterator<Item = TaskId> + '_ {
+        self.recovered_tasks.keys().copied()
+    }
+
     pub fn start(&mut self, task_id: TaskId) -> Result<(), SupervisorError> {
         self.transition(task_id, TaskState::Running)?;
         let started_at = Instant::now();

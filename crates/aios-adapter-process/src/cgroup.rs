@@ -107,6 +107,58 @@ impl CgroupV2Manager {
         configured
     }
 
+    /// Removes stale Task cgroups for identifiers recovered from durable runtime state.
+    ///
+    /// Call this only during non-resumable startup, after interrupted Tasks have received their
+    /// durable terminal Events and before accepting new work. Only exact `task-{TaskId}` children
+    /// beneath this delegated root are considered; unrelated children are never enumerated or
+    /// removed.
+    pub fn reconcile_stale_task_cgroups<I>(&self, task_ids: I) -> Result<usize, ProcessAdapterError>
+    where
+        I: IntoIterator<Item = TaskId>,
+    {
+        self.validate_root()?;
+        let mut removed = 0_usize;
+        let deadline = Instant::now() + CLEANUP_TIMEOUT;
+
+        for task_id in task_ids {
+            if Instant::now() >= deadline {
+                return Err(ProcessAdapterError::InvalidResourceControl);
+            }
+            self.validate_root()?;
+            let directory = self.root_directory.join(format!("task-{task_id}"));
+            if directory.as_os_str().as_encoded_bytes().len() > MAX_SANDBOX_PATH_BYTES {
+                return Err(ProcessAdapterError::InvalidResourceControl);
+            }
+            let metadata = match fs::symlink_metadata(&directory) {
+                Ok(metadata) => metadata,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(_) => return Err(ProcessAdapterError::InvalidResourceControl),
+            };
+            if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                return Err(ProcessAdapterError::InvalidResourceControl);
+            }
+
+            let directory_identity = DirectoryIdentity::read(&directory)
+                .map_err(|_| ProcessAdapterError::InvalidResourceControl)?;
+            validate_cleanup_target(&directory, directory_identity)?;
+            terminate_task_cgroup(&directory, directory_identity)?;
+            wait_until_empty_until(&directory, directory_identity, deadline)?;
+            if Instant::now() >= deadline {
+                return Err(ProcessAdapterError::InvalidResourceControl);
+            }
+            self.validate_root()?;
+            validate_cleanup_target(&directory, directory_identity)?;
+            fs::remove_dir(&directory).map_err(|_| ProcessAdapterError::InvalidResourceControl)?;
+            removed = removed
+                .checked_add(1)
+                .ok_or(ProcessAdapterError::InvalidResourceControl)?;
+        }
+
+        self.validate_root()?;
+        Ok(removed)
+    }
+
     #[must_use]
     pub fn root_directory(&self) -> &Path {
         &self.root_directory
@@ -154,7 +206,7 @@ impl TaskCgroup {
     pub fn finish(self) -> Result<(), ProcessAdapterError> {
         let state = self.state();
         state.terminate()?;
-        wait_until_empty(&state)?;
+        wait_until_empty(&state.directory, state.directory_identity)?;
         fs::remove_dir(&self.directory).map_err(|_| ProcessAdapterError::InvalidResourceControl)
     }
 
@@ -203,27 +255,7 @@ impl TaskCgroupState {
     }
 
     fn validate_identity(&self) -> Result<(), ProcessAdapterError> {
-        let identity = DirectoryIdentity::read(&self.directory)
-            .map_err(|_| ProcessAdapterError::InvalidResourceControl)?;
-        if identity != self.directory_identity {
-            return Err(ProcessAdapterError::InvalidResourceControl);
-        }
-        for file in [
-            "cgroup.procs",
-            "cgroup.kill",
-            "cgroup.events",
-            "cpu.stat",
-            "memory.current",
-            "memory.events",
-            "memory.max",
-            "memory.swap.max",
-            "memory.oom.group",
-        ] {
-            if !self.directory.join(file).is_file() {
-                return Err(ProcessAdapterError::InvalidResourceControl);
-            }
-        }
-        Ok(())
+        validate_task_cgroup_identity(&self.directory, self.directory_identity)
     }
 
     pub(crate) fn launch_identity(&self) -> (PathBuf, u64, u64) {
@@ -240,9 +272,7 @@ impl TaskCgroupState {
     }
 
     pub(crate) fn terminate(&self) -> Result<(), ProcessAdapterError> {
-        self.validate_identity()?;
-        fs::write(self.directory.join("cgroup.kill"), "1")
-            .map_err(|_| ProcessAdapterError::InvalidResourceControl)
+        terminate_task_cgroup(&self.directory, self.directory_identity)
     }
 }
 
@@ -340,6 +370,59 @@ fn configure_task_cgroup(
     .map_err(|_| ProcessAdapterError::InvalidResourceControl)
 }
 
+fn validate_task_cgroup_identity(
+    directory: &Path,
+    expected_identity: DirectoryIdentity,
+) -> Result<(), ProcessAdapterError> {
+    let metadata =
+        fs::symlink_metadata(directory).map_err(|_| ProcessAdapterError::InvalidResourceControl)?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err(ProcessAdapterError::InvalidResourceControl);
+    }
+    let identity = DirectoryIdentity::read(directory)
+        .map_err(|_| ProcessAdapterError::InvalidResourceControl)?;
+    if identity != expected_identity {
+        return Err(ProcessAdapterError::InvalidResourceControl);
+    }
+    for file in [
+        "cgroup.procs",
+        "cgroup.kill",
+        "cgroup.events",
+        "cpu.stat",
+        "memory.current",
+        "memory.events",
+        "memory.max",
+        "memory.swap.max",
+        "memory.oom.group",
+    ] {
+        if !directory.join(file).is_file() {
+            return Err(ProcessAdapterError::InvalidResourceControl);
+        }
+    }
+    Ok(())
+}
+
+fn terminate_task_cgroup(
+    directory: &Path,
+    expected_identity: DirectoryIdentity,
+) -> Result<(), ProcessAdapterError> {
+    validate_task_cgroup_identity(directory, expected_identity)?;
+    fs::write(directory.join("cgroup.kill"), "1")
+        .map_err(|_| ProcessAdapterError::InvalidResourceControl)
+}
+
+fn validate_cleanup_target(
+    directory: &Path,
+    expected_identity: DirectoryIdentity,
+) -> Result<(), ProcessAdapterError> {
+    validate_task_cgroup_identity(directory, expected_identity)?;
+    let current = current_cgroup_directory()?;
+    if current == directory || current.starts_with(directory) {
+        return Err(ProcessAdapterError::InvalidResourceControl);
+    }
+    Ok(())
+}
+
 fn read_keyed_u64(path: &Path, key: &str) -> Result<u64, ProcessAdapterError> {
     let contents =
         fs::read_to_string(path).map_err(|_| ProcessAdapterError::InvalidResourceControl)?;
@@ -356,16 +439,27 @@ fn read_keyed_u64(path: &Path, key: &str) -> Result<u64, ProcessAdapterError> {
         .map_err(|_| ProcessAdapterError::InvalidResourceControl)
 }
 
-fn wait_until_empty(state: &TaskCgroupState) -> Result<(), ProcessAdapterError> {
+fn wait_until_empty(
+    directory: &Path,
+    expected_identity: DirectoryIdentity,
+) -> Result<(), ProcessAdapterError> {
     let deadline = Instant::now() + CLEANUP_TIMEOUT;
+    wait_until_empty_until(directory, expected_identity, deadline)
+}
+
+fn wait_until_empty_until(
+    directory: &Path,
+    expected_identity: DirectoryIdentity,
+    deadline: Instant,
+) -> Result<(), ProcessAdapterError> {
     loop {
-        state.validate_identity()?;
-        let populated = read_keyed_u64(&state.directory.join("cgroup.events"), "populated")?;
-        if populated == 0 {
-            return Ok(());
-        }
         if Instant::now() >= deadline {
             return Err(ProcessAdapterError::InvalidResourceControl);
+        }
+        validate_task_cgroup_identity(directory, expected_identity)?;
+        let populated = read_keyed_u64(&directory.join("cgroup.events"), "populated")?;
+        if populated == 0 {
+            return Ok(());
         }
         thread::sleep(CLEANUP_POLL_INTERVAL);
     }

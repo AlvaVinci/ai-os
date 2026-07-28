@@ -11,6 +11,7 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
+aios-adapter-process = { path = "../aios-adapter-process" }
 aios-core = { path = "../aios-core" }
 aios-runtime = { path = "../aios-runtime" }
 aios-storage-sqlite = { path = "../aios-storage-sqlite" }
