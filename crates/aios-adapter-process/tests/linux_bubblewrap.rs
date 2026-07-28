@@ -17,10 +17,11 @@ use aios_adapter_process::{
     ProcessToolBuilder, ProcessToolHandler, TaskCgroup, TaskScratch, TaskScratchManager,
     VerifiedRootFilesystem, build_minimal_root_filesystem,
 };
-use aios_adapter_tool::ToolAdapterBuilder;
+use aios_adapter_tool::{ToolAdapterBuilder, ToolHandler};
 use aios_agent::{AgentConfig, AgentError, AgentRuntime, ModelDecision, ScriptedModelAdapter};
 use aios_core::{
-    ApprovalPolicy, Budget, CapabilitySet, ErrorCode, NetworkPolicy, TaskSpec, TaskState,
+    ApprovalPolicy, Budget, CapabilitySet, ErrorCode, FileAccess, FileCapability, NetworkPolicy,
+    TaskSpec, TaskState,
 };
 use aios_runtime::{SubmitResult, TaskEventKind, TaskId, TaskSupervisor};
 
@@ -349,6 +350,88 @@ fn linux_sandbox_rejects_rootfs_content_change_before_spawn() {
         handler.run_checked(Vec::new()),
         Err(ProcessAdapterError::InvalidSandbox)
     ));
+}
+
+#[test]
+#[ignore = "requires Linux Bubblewrap 0.11.2+, static BusyBox, and delegated cgroup v2"]
+fn linux_sandbox_binds_read_capability_to_opened_object() {
+    let capability = FileCapability {
+        path: "/workspace/project".to_owned(),
+        access: FileAccess::Read,
+    };
+    let budget = Budget {
+        wall_time_seconds: 5,
+        memory_bytes: 256 * MEBIBYTE,
+        max_parallel_agents: 1,
+    };
+    let mut supervisor = TaskSupervisor::default();
+    let SubmitResult::Accepted(task) = supervisor
+        .submit(TaskSpec {
+            idempotency_key: "linux-descriptor-capability".to_owned(),
+            goal: "Read exactly one descriptor-bound project".to_owned(),
+            capabilities: CapabilitySet {
+                filesystem: vec![capability.clone()],
+                network: NetworkPolicy::Deny,
+                tools: vec!["process_runner".to_owned()],
+            },
+            budget: budget.clone(),
+            approval: ApprovalPolicy {
+                required_for: Vec::new(),
+            },
+        })
+        .expect("submit descriptor-bound Task")
+    else {
+        panic!("expected accepted Task");
+    };
+    let fixture = SandboxFixture::new_for_task("descriptor-capability", task.task_id);
+    let capability_root = fixture.base.join("capability-root");
+    let project = capability_root.join("workspace/project");
+    fs::create_dir_all(&project).expect("create Capability source");
+    fs::write(project.join("input.txt"), b"original\n").expect("write Capability input");
+    let task_cgroup = fixture.create_task_cgroup(
+        CgroupResourceBudget::from_task_budget(&budget).expect("derive Task cgroup budget"),
+    );
+    let cgroup_directory = task_cgroup.directory().to_owned();
+    let mut handler = fixture
+        .sandbox_builder(
+            &[
+                "sh",
+                "-c",
+                "grep -q '^original$' /workspace/project/input.txt && ! echo changed > /workspace/project/input.txt",
+            ],
+            TEST_TIMEOUT,
+        )
+        .filesystem_capabilities(&capability_root, vec![capability])
+        .task_cgroup(&task_cgroup, cgroup_launcher())
+        .build()
+        .expect("build descriptor-bound handler");
+
+    let opened_project = capability_root.join("opened-project");
+    fs::rename(&project, &opened_project).expect("move opened Capability object");
+    fs::create_dir(&project).expect("replace Capability path");
+    fs::write(project.join("input.txt"), b"replacement\n").expect("write replacement input");
+
+    supervisor.start(task.task_id).expect("start Task");
+    let context = supervisor
+        .execution_context(task.task_id)
+        .expect("release Task execution context");
+    handler
+        .execute_for_task(&context, Vec::new())
+        .expect("read opened object through read-only mount");
+    assert_eq!(
+        fs::read(opened_project.join("input.txt")).expect("read opened source"),
+        b"original\n"
+    );
+    assert_eq!(
+        fs::read(project.join("input.txt")).expect("read replacement source"),
+        b"replacement\n"
+    );
+
+    drop(handler);
+    task_cgroup
+        .finish()
+        .expect("remove descriptor-bound Task cgroup");
+    assert!(!cgroup_directory.exists());
 }
 
 #[test]
