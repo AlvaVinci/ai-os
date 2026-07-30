@@ -12,6 +12,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "aios-adapter-network"
+version = "0.1.0"
+dependencies = [
+ "aios-core",
+ "aios-runtime",
+]
+
+[[package]]
 name = "aios-adapter-process"
 version = "0.1.0"
 dependencies = [

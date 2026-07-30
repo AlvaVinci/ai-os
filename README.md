@@ -69,6 +69,7 @@ Read more:
 - [Agent runtime and Model Adapter contract](docs/agent-runtime.md)
 - [Tool adapter](docs/tool-adapter.md)
 - [Filesystem adapter](docs/filesystem-adapter.md)
+- [Network adapter](docs/network-adapter.md)
 - [Process adapter](docs/process-adapter.md)
 - [Developer workloads and benchmarks](benchmarks/README.md)
 - [Architecture decisions](docs/adr/README.md)
@@ -115,6 +116,7 @@ Implemented:
 - bounded in-process Tool Catalog and Handler adapter without shell execution
 - bounded child-process Tool handler with explicit executable identity, argument policy, clean environment, and direct-child timeout
 - experimental Linux descriptor-relative create-new Filesystem Adapter with exact write Capability and approval enforcement
+- experimental IP-bound bounded TCP Network Adapter with exact destination and approval enforcement
 - Task Budget propagation through the Tool and Agent path with atomic terminal `BUDGET_EXCEEDED` Events
 - experimental Linux x86_64 Bubblewrap launch plan with a content-addressed sealed minimal rootfs, fresh Task-ID-scoped scratch, namespace isolation, deny-by-construction host network, a sealed seccomp deny policy, and Task-bound cgroup CPU/memory enforcement
 - three versioned developer workload fixtures with tested Capability and approval boundaries

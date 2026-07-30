@@ -119,7 +119,9 @@ A complete filesystem adapter must still:
 
 ### Network
 
-Current policy matches the requested TCP host and port. A network adapter must additionally:
+Current policy matches the requested TCP host and port. The experimental Network Adapter enforces a bounded IP-only subset: it constructs one `SocketAddr` from an explicit IPv4 or IPv6 Capability destination, connects without DNS or proxy resolution, verifies the actual peer, transfers one bounded request and response, and closes the socket without exposing it.
+
+Hostname Capabilities remain policy-valid but fail closed in this adapter. A complete hostname or HTTPS adapter must additionally:
 
 - resolve and validate every actual destination address;
 - bind the configured TCP port to the actual socket;
@@ -207,7 +209,7 @@ Violations of these invariants are security defects. The associated threats and 
 | Schema validation | implemented | implemented | implemented | implemented |
 | Deterministic policy | lexical path/access | exact TCP host and port, deny default | exact Tool/action | capability-first action match |
 | Complete operation retention | runtime type available | runtime type available | implemented by Tool gate | implemented |
-| OS resource binding | read-only Process mounts and create-new write adapter implemented; Process writes and general file operations incomplete | not implemented | path/inode precheck only; OS binding not implemented | process-local only |
+| OS resource binding | read-only Process mounts and create-new write adapter implemented; Process writes and general file operations incomplete | IP-only one-shot TCP exchange implemented; DNS, TLS, and Process networking incomplete | path/inode precheck only; OS binding not implemented | process-local only |
 | Restart recovery | no sensitive Task input | no sensitive Task input | no pending operation | public Task state only |
 
 The matrix must be read literally. A policy check without OS resource binding is not complete Capability enforcement.

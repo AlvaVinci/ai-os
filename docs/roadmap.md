@@ -41,6 +41,7 @@ Run Tasks safely on one Linux device.
 - [x] Bounded in-process Tool Catalog and Handler adapter without shell execution.
 - [x] Bounded child-process Tool handler with explicit executable, argument policy, clean environment, and direct-child timeout.
 - [x] Descriptor-relative Linux create-new writes behind exact Filesystem Capabilities.
+- [x] IP-bound bounded TCP exchanges behind exact Network Capabilities.
 - [x] Bounded Task-scoped Model Adapter contract and deterministic Agent execution path.
 - [ ] Principal-separated approval API.
 - [ ] Operating-system enforcement and isolation adapters for filesystem, network, and out-of-process Tools.

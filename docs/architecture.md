@@ -4,10 +4,11 @@
 
 Draft. The architecture will evolve from MVP implementation and measurement.
 
-The repository currently contains eight crates:
+The repository currently contains nine crates:
 
 - `aios-agent`: bounded model-session contracts and synchronous approval-aware Agent execution
 - `aios-adapter-filesystem`: descriptor-relative Linux create-new writes behind exact Filesystem Capabilities
+- `aios-adapter-network`: bounded one-shot TCP exchanges to exact IP destinations
 - `aios-adapter-process`: bounded child-process Tool handler with explicit executable configuration
 - `aios-adapter-tool`: bounded catalog and in-process handler execution behind `ExecutionGate`
 - `aios-core`: Task contracts, validation, stable error codes, and lifecycle states
@@ -15,7 +16,7 @@ The repository currently contains eight crates:
 - `aios-runtime`: synchronous task supervision and a bounded in-memory event store
 - `aios-storage-sqlite`: persistent audit events and event-derived Task state recovery
 
-The Tool Adapter can invoke explicitly registered in-process handlers, including the bounded child-process handler. The Filesystem Adapter enforces a narrow Linux create-new write operation without granting read access. The Process Adapter starts only a trusted, fixed executable with validated arguments and a cleared environment. No crate provides complete process isolation or general Capability enforcement yet. The remaining crates define the trust boundary that future execution components must satisfy.
+The Tool Adapter can invoke explicitly registered in-process handlers, including the bounded child-process handler. The Filesystem Adapter enforces a narrow Linux create-new write operation without granting read access. The Network Adapter binds a bounded one-shot TCP exchange to an exact IP address and port without exposing its socket. The Process Adapter starts only a trusted, fixed executable with validated arguments and a cleared environment. No crate provides complete process isolation or general Capability enforcement yet. The remaining crates define the trust boundary that future execution components must satisfy.
 
 ## System overview
 
@@ -139,6 +140,17 @@ The current adapter executes trusted in-process handlers only. Handler-specific 
 - Returns only the number of bytes written and exposes neither contents nor a descriptor.
 
 The adapter does not read, overwrite, append, rename, delete, create directories, route an Agent operation, or grant authority to a subprocess. A write or sync failure may leave a partial new file because path-based cleanup could delete a raced replacement. See [Filesystem adapter](filesystem-adapter.md) and [ADR-0014](adr/0014-create-new-write-filesystem-adapter.md).
+
+### Network Adapter
+
+- Connects directly to one explicit IPv4 or IPv6 address and TCP port.
+- Requires an exact Task destination Capability and any configured `network.egress` approval.
+- Retains the complete destination and bounded request bytes privately across approval.
+- Verifies the connected peer before sending, then writes at most 64 KiB and reads at most 1 MiB.
+- Applies trusted bounded socket timeouts and exposes neither the raw adapter nor a live socket.
+- Returns bounded untrusted response bytes with redacted failure categories.
+
+The adapter does not resolve hostnames, negotiate TLS, use proxies, follow redirects, listen, route an Agent operation, or grant network authority to a subprocess. Remote effects may occur before a later I/O failure and cannot be rolled back. See [Network adapter](network-adapter.md) and [ADR-0015](adr/0015-ip-bound-tcp-network-adapter.md).
 
 ### Process Adapter
 
