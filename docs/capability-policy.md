@@ -45,6 +45,8 @@ The experimental Linux [Filesystem Adapter](filesystem-adapter.md) enforces a na
 
 A network adapter must additionally bind authorization to the actual connection destination and defend against DNS rebinding, redirects, proxies, alternate IP representations, and subprocess bypasses.
 
+The experimental [Network Adapter](network-adapter.md) implements one direct exchange for an explicit IP address and TCP port. It verifies the connected peer and performs no DNS, proxy, redirect, TLS, listening, or socket delegation. Hostname Capabilities and general or subprocess networking remain unenforced and fail closed in this adapter.
+
 ## Tool semantics
 
 - Tool names use exact identifier matching against the Task allowlist.
@@ -65,4 +67,4 @@ The policy engine answers whether an operation may proceed. It does not make the
 5. apply operating-system isolation and resource limits;
 6. record a resource-free audit event for the decision.
 
-`aios-runtime` now provides `ExecutionGate`, which retains the complete adapter operation while approval is pending and invokes the adapter only after allow or successful grant consumption. The gate and in-process Tool Adapter do not provide operating-system isolation by themselves. The Filesystem Adapter and Process read mounts implement only the documented narrow Linux subsets. Filesystem, network, out-of-process Tool, and model adapters must still complete resolved-resource, subprocess, and resource-limit enforcement, so this module must not be described as complete operating-system Capability enforcement.
+`aios-runtime` now provides `ExecutionGate`, which retains the complete adapter operation while approval is pending and invokes the adapter only after allow or successful grant consumption. The gate and in-process Tool Adapter do not provide operating-system isolation by themselves. The Filesystem Adapter, IP-only Network Adapter, and Process read mounts implement only their documented narrow subsets. Filesystem, network, out-of-process Tool, and model adapters must still complete resolved-resource, subprocess, and resource-limit enforcement, so this module must not be described as complete operating-system Capability enforcement.

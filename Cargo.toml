@@ -2,6 +2,7 @@
 members = [
     "crates/aios-agent",
     "crates/aios-adapter-filesystem",
+    "crates/aios-adapter-network",
     "crates/aios-adapter-process",
     "crates/aios-adapter-tool",
     "crates/aios-core",
