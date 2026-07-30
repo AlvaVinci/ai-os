@@ -134,23 +134,25 @@ The current adapter executes trusted in-process handlers only. Handler-specific 
 
 - Creates only a new regular file beneath one trusted, opened root directory.
 - Requires an exact Task `write` Capability and any configured `filesystem.write` approval.
-- Retains the complete path and bounded byte payload privately across approval.
+- Retains the complete path, bounded byte payload, and original Task execution context privately across approval.
 - Resolves from the root descriptor with Linux `openat2` beneath, no-symlink, no-magic-link, and no-mount-crossing constraints.
 - Uses write-only, create-exclusive, close-on-exec access and owner-only file mode.
+- Checks the remaining Task wall-time before create and write and after data synchronization.
 - Returns only the number of bytes written and exposes neither contents nor a descriptor.
 
-The adapter does not read, overwrite, append, rename, delete, create directories, route an Agent operation, or grant authority to a subprocess. A write or sync failure may leave a partial new file because path-based cleanup could delete a raced replacement. See [Filesystem adapter](filesystem-adapter.md) and [ADR-0014](adr/0014-create-new-write-filesystem-adapter.md).
+The adapter does not read, overwrite, append, rename, delete, create directories, route an Agent operation, or grant authority to a subprocess. Synchronous write and sync calls are not preemptible; a failure or deadline reached during I/O may leave a partial new file because path-based cleanup could delete a raced replacement. See [Filesystem adapter](filesystem-adapter.md), [ADR-0014](adr/0014-create-new-write-filesystem-adapter.md), and [ADR-0016](adr/0016-bind-resource-adapters-to-task-wall-time.md).
 
 ### Network Adapter
 
 - Connects directly to one explicit IPv4 or IPv6 address and TCP port.
 - Requires an exact Task destination Capability and any configured `network.egress` approval.
-- Retains the complete destination and bounded request bytes privately across approval.
+- Retains the complete destination, bounded request bytes, and original Task execution context privately across approval.
 - Verifies the connected peer before sending, then writes at most 64 KiB and reads at most 1 MiB.
-- Applies trusted bounded socket timeouts and exposes neither the raw adapter nor a live socket.
+- Bounds each socket stage by the smaller of its trusted timeout and the remaining Task wall-time.
+- Exposes neither the raw adapter nor a live socket.
 - Returns bounded untrusted response bytes with redacted failure categories.
 
-The adapter does not resolve hostnames, negotiate TLS, use proxies, follow redirects, listen, route an Agent operation, or grant network authority to a subprocess. Remote effects may occur before a later I/O failure and cannot be rolled back. See [Network adapter](network-adapter.md) and [ADR-0015](adr/0015-ip-bound-tcp-network-adapter.md).
+The adapter does not resolve hostnames, negotiate TLS, use proxies, follow redirects, listen, route an Agent operation, or grant network authority to a subprocess. Remote effects may occur before a later deadline or I/O failure and cannot be rolled back. See [Network adapter](network-adapter.md), [ADR-0015](adr/0015-ip-bound-tcp-network-adapter.md), and [ADR-0016](adr/0016-bind-resource-adapters-to-task-wall-time.md).
 
 ### Process Adapter
 

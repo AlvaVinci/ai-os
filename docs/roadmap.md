@@ -61,6 +61,7 @@ Manage resource contention between Tasks and models.
 
 - [x] enforce Task-derived CPU, RAM, and wall-time limits for isolated Process Tools
 - [x] reconcile recovered Task cgroups during fail-closed non-resumable daemon startup
+- [x] bind Filesystem and Network Adapter approval waits and synchronous network I/O to the original Task wall-time
 - [ ] extend resource limits to model inference and concurrent Task scheduling
 - observe GPU and VRAM usage
 - manage priority and concurrency

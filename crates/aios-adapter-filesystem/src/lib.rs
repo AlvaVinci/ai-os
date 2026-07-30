@@ -13,7 +13,7 @@ use std::time::Duration;
 use aios_core::{CapabilityRequest, FileAccess};
 use aios_runtime::{
     ApprovalId, EventStore, Executed, ExecutionAdapter, ExecutionError, ExecutionGate,
-    ExecutionOutcome, GuardedOperation, TaskId, TaskSnapshot, TaskSupervisor,
+    ExecutionOutcome, GuardedOperation, TaskExecutionContext, TaskId, TaskSnapshot, TaskSupervisor,
 };
 
 pub const MAX_FILESYSTEM_PATH_BYTES: usize = 4_096;
@@ -25,6 +25,8 @@ pub enum FilesystemAdapterError {
     InvalidConfig,
     InvalidOperation,
     UnsupportedPlatform,
+    ScopeMismatch,
+    BudgetExceeded,
     CreateFailed,
     WriteFailed,
 }
@@ -35,6 +37,8 @@ impl Display for FilesystemAdapterError {
             Self::InvalidConfig => "invalid Filesystem Adapter configuration",
             Self::InvalidOperation => "invalid filesystem operation",
             Self::UnsupportedPlatform => "Filesystem Adapter is unsupported on this platform",
+            Self::ScopeMismatch => "filesystem operation scope does not match the Task",
+            Self::BudgetExceeded => "filesystem operation exceeded the Task Budget",
             Self::CreateFailed => "filesystem create operation failed",
             Self::WriteFailed => "filesystem write operation failed",
         };
@@ -51,6 +55,7 @@ impl Error for FilesystemAdapterError {}
 pub struct FilesystemWriteOperation {
     path: String,
     contents: Vec<u8>,
+    execution_context: Option<TaskExecutionContext>,
 }
 
 impl GuardedOperation for FilesystemWriteOperation {
@@ -78,7 +83,11 @@ impl FilesystemCatalog {
         contents: Vec<u8>,
     ) -> Result<FilesystemWriteOperation, FilesystemAdapterError> {
         validate_operation(&path, &contents)?;
-        Ok(FilesystemWriteOperation { path, contents })
+        Ok(FilesystemWriteOperation {
+            path,
+            contents,
+            execution_context: None,
+        })
     }
 }
 
@@ -144,6 +153,12 @@ impl FilesystemExecutionGate {
         approval_ttl: Duration,
     ) -> Result<ExecutionOutcome<FilesystemWriteReceipt>, ExecutionError<FilesystemAdapterError>>
     {
+        let mut operation = operation;
+        operation.execution_context = Some(
+            supervisor
+                .execution_context(task_id)
+                .map_err(ExecutionError::Supervisor)?,
+        );
         self.gate
             .request(supervisor, task_id, operation, approval_ttl)
     }
@@ -245,6 +260,11 @@ fn create_new(
 
     use rustix::fs::{Mode, OFlags, ResolveFlags, openat2};
 
+    let context = operation
+        .execution_context
+        .as_ref()
+        .ok_or(FilesystemAdapterError::ScopeMismatch)?;
+    require_remaining_budget(context)?;
     let relative = Path::new(&operation.path)
         .strip_prefix("/")
         .map_err(|_| FilesystemAdapterError::InvalidOperation)?;
@@ -260,9 +280,11 @@ fn create_new(
     )
     .map_err(|_| FilesystemAdapterError::CreateFailed)?;
     let mut file = std::fs::File::from(descriptor);
+    require_remaining_budget(context)?;
     file.write_all(&operation.contents)
         .and_then(|()| file.sync_data())
         .map_err(|_| FilesystemAdapterError::WriteFailed)?;
+    require_remaining_budget(context)?;
     Ok(FilesystemWriteReceipt {
         bytes_written: operation.contents.len(),
     })
@@ -274,6 +296,14 @@ fn create_new(
     _operation: FilesystemWriteOperation,
 ) -> Result<FilesystemWriteReceipt, FilesystemAdapterError> {
     Err(FilesystemAdapterError::UnsupportedPlatform)
+}
+
+#[cfg(target_os = "linux")]
+fn require_remaining_budget(context: &TaskExecutionContext) -> Result<(), FilesystemAdapterError> {
+    if context.remaining_wall_time().is_zero() {
+        return Err(FilesystemAdapterError::BudgetExceeded);
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -333,6 +363,7 @@ mod linux_tests {
     use std::fs::{self, DirBuilder};
     use std::os::unix::fs::{DirBuilderExt, PermissionsExt, symlink};
     use std::path::{Path, PathBuf};
+    use std::thread;
     use std::time::Duration;
 
     use aios_core::{
@@ -412,11 +443,18 @@ mod linux_tests {
         filesystem: Vec<FileCapability>,
         required_for: &[&str],
     ) -> (TaskSupervisor, TaskId) {
+        running_supervisor_with_wall_time(filesystem, required_for, 60)
+    }
+
+    fn running_supervisor_with_wall_time(
+        filesystem: Vec<FileCapability>,
+        required_for: &[&str],
+        wall_time_seconds: u64,
+    ) -> (TaskSupervisor, TaskId) {
         let mut supervisor = TaskSupervisor::default();
-        let SubmitResult::Accepted(task) = supervisor
-            .submit(task("filesystem-adapter-test", filesystem, required_for))
-            .expect("submit Task")
-        else {
+        let mut spec = task("filesystem-adapter-test", filesystem, required_for);
+        spec.budget.wall_time_seconds = wall_time_seconds;
+        let SubmitResult::Accepted(task) = supervisor.submit(spec).expect("submit Task") else {
             panic!("expected accepted Task");
         };
         supervisor.start(task.task_id).expect("start Task");
@@ -526,6 +564,48 @@ mod linux_tests {
             fs::read(destination).expect("read approved output"),
             b"approved bytes"
         );
+        assert_eq!(gate.pending_count(), 0);
+    }
+
+    #[test]
+    fn approval_wait_cannot_reset_task_wall_time() {
+        let directory = TestDirectory::new("approval-budget");
+        create_sandbox_path(directory.path());
+        let catalog = FilesystemCatalog::new();
+        let mut gate = FilesystemExecutionGate::new(directory.path()).expect("open adapter root");
+        let (mut supervisor, task_id) = running_supervisor_with_wall_time(
+            vec![write_capability("/workspace/output")],
+            &["filesystem.write"],
+            1,
+        );
+        let destination = directory.path().join("workspace/output/expired.txt");
+        let result = gate
+            .request(
+                &mut supervisor,
+                task_id,
+                catalog
+                    .prepare_create(
+                        "/workspace/output/expired.txt".to_owned(),
+                        b"must not be written".to_vec(),
+                    )
+                    .expect("prepare create"),
+                Duration::from_secs(30),
+            )
+            .expect("request approval");
+        let ExecutionOutcome::ApprovalRequired(request) = result else {
+            panic!("expected approval request");
+        };
+        thread::sleep(Duration::from_millis(1_100));
+
+        let result = gate.approve_and_execute(&mut supervisor, request.approval_id);
+
+        assert!(matches!(
+            result,
+            Err(ExecutionError::Adapter(
+                FilesystemAdapterError::BudgetExceeded
+            ))
+        ));
+        assert!(!destination.exists());
         assert_eq!(gate.pending_count(), 0);
     }
 
