@@ -104,7 +104,7 @@ Cancellation, failure, success, rejection, denial, and expiration remove pending
 Policy matching remains lexical. Two Linux adapters now enforce narrow subsets:
 
 - The Process Adapter accepts exact Task `read` Capabilities, resolves their sources beneath an opened root with `openat2`, transfers the retained descriptors through a private launch broker, and mounts them read-only through Bubblewrap.
-- The Filesystem Adapter accepts one create-new operation under an exact Task `write` Capability. It opens from a retained trusted root descriptor with `O_WRONLY | O_CREAT | O_EXCL` and restrictive `openat2` resolution flags, then returns only a byte count.
+- The Filesystem Adapter accepts one create-new operation under an exact Task `write` Capability. It retains the original Task execution context across approval, checks the remaining wall-time around synchronous I/O, opens from a retained trusted root descriptor with `O_WRONLY | O_CREAT | O_EXCL` and restrictive `openat2` resolution flags, then returns only a byte count.
 
 The Process Adapter still rejects write Capability mounts because a writable bind mount would also grant reads. The Filesystem Adapter does not expose its descriptor or operations to a Process Tool.
 
@@ -119,7 +119,7 @@ A complete filesystem adapter must still:
 
 ### Network
 
-Current policy matches the requested TCP host and port. The experimental Network Adapter enforces a bounded IP-only subset: it constructs one `SocketAddr` from an explicit IPv4 or IPv6 Capability destination, connects without DNS or proxy resolution, verifies the actual peer, transfers one bounded request and response, and closes the socket without exposing it.
+Current policy matches the requested TCP host and port. The experimental Network Adapter enforces a bounded IP-only subset: it retains the original Task execution context across approval, constructs one `SocketAddr` from an explicit IPv4 or IPv6 Capability destination, connects without DNS or proxy resolution, verifies the actual peer, transfers one bounded request and response within the remaining Task wall-time, and closes the socket without exposing it.
 
 Hostname Capabilities remain policy-valid but fail closed in this adapter. A complete hostname or HTTPS adapter must additionally:
 

@@ -118,6 +118,7 @@ Implemented:
 - experimental Linux descriptor-relative create-new Filesystem Adapter with exact write Capability and approval enforcement
 - experimental IP-bound bounded TCP Network Adapter with exact destination and approval enforcement
 - Task Budget propagation through the Tool and Agent path with atomic terminal `BUDGET_EXCEEDED` Events
+- original Task wall-time retention across Filesystem and Network approval, with Task-bounded synchronous network I/O
 - experimental Linux x86_64 Bubblewrap launch plan with a content-addressed sealed minimal rootfs, fresh Task-ID-scoped scratch, namespace isolation, deny-by-construction host network, a sealed seccomp deny policy, and Task-bound cgroup CPU/memory enforcement
 - three versioned developer workload fixtures with tested Capability and approval boundaries
 

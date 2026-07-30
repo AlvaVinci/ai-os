@@ -12,7 +12,8 @@ Experimental Linux-only create-new writer. This is a narrow operating-system enf
 - A normalized absolute Capability path is interpreted relative to that root.
 - `FilesystemCatalog` validates the complete path and byte payload before authorization.
 - `FilesystemExecutionGate` requires an exact `write` Capability and any configured `filesystem.write` approval.
-- Approval retains the exact path and bytes without creating the file early.
+- The gate binds the operation to the running Task's original execution context before authorization.
+- Approval retains the exact path, bytes, and Task context without creating the file early or resetting the Task wall-time.
 - A successful operation returns only the number of bytes written. It never returns file contents or a descriptor.
 
 The adapter is not exposed as a Tool handler. A Tool Capability does not substitute for a Filesystem Capability.
@@ -38,9 +39,12 @@ Parent directories must already exist. Trusted provisioning is responsible for c
 - Contents are limited to 1 MiB.
 - Empty files are allowed.
 - Errors expose only stable categories and omit paths, contents, and operating-system details.
+- The remaining Task wall-time is checked before create, before write, and after data synchronization.
 - The adapter calls `sync_data` before reporting success.
 
-If writing or syncing fails after creation, a partial new file can remain. The adapter deliberately does not unlink by path because another actor could replace that path before cleanup. Callers must treat the operation as non-idempotent and inspect or remove partial output through a separately authorized, descriptor-safe workflow.
+Approval time consumes the original Task Budget. An operation approved after its Task deadline returns `BudgetExceeded` before creating the destination.
+
+Filesystem write and synchronization calls are synchronous and are not safely preemptible inside this adapter. If writing, syncing, or the Task deadline fails after creation, a partial or complete new file can remain. The adapter deliberately does not unlink by path because another actor could replace that path before cleanup. Callers must treat the operation as non-idempotent and inspect or remove partial output through a separately authorized, descriptor-safe workflow.
 
 ## Non-goals
 
@@ -50,7 +54,7 @@ This increment does not implement:
 - overwriting, appending, renaming, deleting, linking, or metadata changes;
 - directory creation;
 - atomic publish by rename;
-- per-operation wall-time or disk-quota enforcement;
+- preemptive filesystem I/O cancellation or disk-quota enforcement;
 - access for an untrusted subprocess;
 - Agent or Local API routing to the adapter;
 - non-Linux execution.
@@ -63,10 +67,11 @@ Portable unit tests cover normalized path and byte bounds. Linux tests cover:
 
 - exact write Capability execution and owner-only file mode;
 - approval without early side effects;
+- no file creation when approval outlives the original Task wall-time;
 - denial for prefix siblings and read-only Capabilities;
 - no overwrite of an existing destination;
 - root-path replacement without authority redirection;
 - symlink escape rejection;
 - Linux cross-target compilation.
 
-See [ADR-0014](adr/0014-create-new-write-filesystem-adapter.md), the [Capability model](capability-model.md), and the [Threat model](threat-model.md).
+See [ADR-0014](adr/0014-create-new-write-filesystem-adapter.md), [ADR-0016](adr/0016-bind-resource-adapters-to-task-wall-time.md), the [Capability model](capability-model.md), and the [Threat model](threat-model.md).

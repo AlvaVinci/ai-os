@@ -2,7 +2,7 @@
 
 ## Status
 
-Experimental process-local workflow for one-time human approval. It is connected to capability policy evaluation, Task lifecycle, the Event Store, and the generic `ExecutionGate`. It is not yet exposed through the local API or connected to a concrete operating-system adapter.
+Experimental process-local workflow for one-time human approval. It is connected to capability policy evaluation, Task lifecycle, the Event Store, the generic `ExecutionGate`, and narrow Filesystem, Network, and Process enforcement paths. It is not yet exposed through a principal-separated local API.
 
 ## Lifecycle
 
@@ -26,7 +26,7 @@ Each pending request is bound to:
 
 `ApprovalGrant` does not implement `Clone`, `Debug`, or serialization. Its `authorize` method takes ownership of the grant, so every attempt consumes it. A wrong Task, Operation, or action fails with `ScopeMismatch`; an expired grant fails with `Expired`. Neither failure returns the grant.
 
-The supervisor binds the Operation ID to the capability request, while `ExecutionGate` privately retains the complete adapter operation, including arguments that are intentionally absent from audit events. Model output must not select or reuse an Operation ID. The gate does not accept a replacement operation after approval, and every execution attempt removes the retained value.
+The supervisor binds the Operation ID to the capability request, while `ExecutionGate` privately retains the complete adapter operation, including arguments that are intentionally absent from audit events. Resource adapter facades also attach the running Task's original non-serializable execution context before authorization, so approval cannot reset its wall-time Budget. Model output must not select or reuse an Operation ID. The gate does not accept a replacement operation after approval, and every execution attempt removes the retained value.
 
 ## Bounds and expiration
 
@@ -58,4 +58,4 @@ Denial, cancellation, and expiration remove retained operations. Audit failure d
 
 - define a principal-separated future local API for request, approval, and denial;
 - keep v0.1 restart recovery non-resumable; any later authority restoration requires a new encrypted and replay-safe design;
-- integrate and complete filesystem, network, out-of-process Tool, and model adapters behind `ExecutionGate`.
+- integrate the narrow Filesystem and Network Adapters into Agent routing and complete out-of-process Tool and model adapters behind `ExecutionGate`.
