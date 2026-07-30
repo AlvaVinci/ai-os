@@ -4,9 +4,10 @@
 
 Draft. The architecture will evolve from MVP implementation and measurement.
 
-The repository currently contains seven crates:
+The repository currently contains eight crates:
 
 - `aios-agent`: bounded model-session contracts and synchronous approval-aware Agent execution
+- `aios-adapter-filesystem`: descriptor-relative Linux create-new writes behind exact Filesystem Capabilities
 - `aios-adapter-process`: bounded child-process Tool handler with explicit executable configuration
 - `aios-adapter-tool`: bounded catalog and in-process handler execution behind `ExecutionGate`
 - `aios-core`: Task contracts, validation, stable error codes, and lifecycle states
@@ -14,7 +15,7 @@ The repository currently contains seven crates:
 - `aios-runtime`: synchronous task supervision and a bounded in-memory event store
 - `aios-storage-sqlite`: persistent audit events and event-derived Task state recovery
 
-The Tool Adapter can invoke explicitly registered in-process handlers, including the bounded child-process handler. The Process Adapter starts only a trusted, fixed executable with validated arguments and a cleared environment. It is not an operating-system sandbox, and no crate provides complete process isolation yet. The remaining crates define the trust boundary that future execution components must satisfy.
+The Tool Adapter can invoke explicitly registered in-process handlers, including the bounded child-process handler. The Filesystem Adapter enforces a narrow Linux create-new write operation without granting read access. The Process Adapter starts only a trusted, fixed executable with validated arguments and a cleared environment. No crate provides complete process isolation or general Capability enforcement yet. The remaining crates define the trust boundary that future execution components must satisfy.
 
 ## System overview
 
@@ -128,6 +129,17 @@ The current `aios-agent` crate supplies a deterministic scripted Model Adapter f
 
 The current adapter executes trusted in-process handlers only. Handler-specific validation, timeouts, partial-side-effect idempotency, and sensitive output handling remain handler responsibilities. See [Tool adapter](tool-adapter.md).
 
+### Filesystem Adapter
+
+- Creates only a new regular file beneath one trusted, opened root directory.
+- Requires an exact Task `write` Capability and any configured `filesystem.write` approval.
+- Retains the complete path and bounded byte payload privately across approval.
+- Resolves from the root descriptor with Linux `openat2` beneath, no-symlink, no-magic-link, and no-mount-crossing constraints.
+- Uses write-only, create-exclusive, close-on-exec access and owner-only file mode.
+- Returns only the number of bytes written and exposes neither contents nor a descriptor.
+
+The adapter does not read, overwrite, append, rename, delete, create directories, route an Agent operation, or grant authority to a subprocess. A write or sync failure may leave a partial new file because path-based cleanup could delete a raced replacement. See [Filesystem adapter](filesystem-adapter.md) and [ADR-0014](adr/0014-create-new-write-filesystem-adapter.md).
+
 ### Process Adapter
 
 - Executes one canonical absolute executable configured by trusted startup code.
@@ -143,7 +155,7 @@ The current adapter executes trusted in-process handlers only. Handler-specific 
 - Derives cumulative CPU-time, resident-memory, and wall-time limits from the stable Task Budget and requires an exact Task-ID and limit match before an Agent-invoked Bubblewrap Tool can spawn.
 - Propagates hard-limit failure through the Tool Adapter and Agent so the Supervisor atomically records the existing `BUDGET_EXCEEDED` category before terminal state.
 
-Direct mode remains a constrained trusted `ToolHandler`, not a sandbox, and does not enforce Task memory. Bubblewrap mode is an experimental deny-network isolation foundation. Its optional read Capability mounts are Task-exact and descriptor-bound, but write-only semantics, descriptor-bound rootfs/scratch/executable use, and general filesystem operations remain incomplete. The seccomp policy is a reviewed deny set rather than a workload-specific allowlist. Model, disk, process-count, GPU, and VRAM budgets; OS-backed rootfs immutability; and Linux-tested asynchronous cancellation remain incomplete. Process output is deliberately discarded until bounded streaming and descendant cleanup can be enforced together. See [Process adapter](process-adapter.md), [ADR-0006](adr/0006-bubblewrap-process-isolation.md), [ADR-0007](adr/0007-task-scoped-scratch.md), [ADR-0008](adr/0008-content-addressed-rootfs.md), [ADR-0009](adr/0009-task-cgroup-v2-resource-boundary.md), [ADR-0010](adr/0010-sealed-seccomp-deny-policy.md), [ADR-0011](adr/0011-bind-task-budget-to-process-execution.md), [ADR-0012](adr/0012-reconcile-stale-task-cgroups-on-startup.md), and [ADR-0013](adr/0013-descriptor-bound-read-capabilities.md).
+Direct mode remains a constrained trusted `ToolHandler`, not a sandbox, and does not enforce Task memory. Bubblewrap mode is an experimental deny-network isolation foundation. Its optional read Capability mounts are Task-exact and descriptor-bound, but write-only Process semantics, descriptor-bound rootfs/scratch/executable use, and general filesystem operations remain incomplete. The separate Filesystem Adapter does not widen the Process Tool's authority. The seccomp policy is a reviewed deny set rather than a workload-specific allowlist. Model, disk, process-count, GPU, and VRAM budgets; OS-backed rootfs immutability; and Linux-tested asynchronous cancellation remain incomplete. Process output is deliberately discarded until bounded streaming and descendant cleanup can be enforced together. See [Process adapter](process-adapter.md), [ADR-0006](adr/0006-bubblewrap-process-isolation.md), [ADR-0007](adr/0007-task-scoped-scratch.md), [ADR-0008](adr/0008-content-addressed-rootfs.md), [ADR-0009](adr/0009-task-cgroup-v2-resource-boundary.md), [ADR-0010](adr/0010-sealed-seccomp-deny-policy.md), [ADR-0011](adr/0011-bind-task-budget-to-process-execution.md), [ADR-0012](adr/0012-reconcile-stale-task-cgroups-on-startup.md), and [ADR-0013](adr/0013-descriptor-bound-read-capabilities.md).
 
 ### Model Router
 

@@ -101,7 +101,12 @@ Cancellation, failure, success, rejection, denial, and expiration remove pending
 
 ### Filesystem
 
-Policy matching remains lexical. The Linux Process Adapter now implements a bounded read-only subset: trusted configuration supplies the exact Task read Capability set and a source root, sources are resolved beneath an opened root with `openat2`, opened descriptors cross a private launch broker, and Bubblewrap mounts and closes them before Tool execution. Write-only Capabilities are rejected because a writable bind mount would also grant reads.
+Policy matching remains lexical. Two Linux adapters now enforce narrow subsets:
+
+- The Process Adapter accepts exact Task `read` Capabilities, resolves their sources beneath an opened root with `openat2`, transfers the retained descriptors through a private launch broker, and mounts them read-only through Bubblewrap.
+- The Filesystem Adapter accepts one create-new operation under an exact Task `write` Capability. It opens from a retained trusted root descriptor with `O_WRONLY | O_CREAT | O_EXCL` and restrictive `openat2` resolution flags, then returns only a byte count.
+
+The Process Adapter still rejects write Capability mounts because a writable bind mount would also grant reads. The Filesystem Adapter does not expose its descriptor or operations to a Process Tool.
 
 A complete filesystem adapter must still:
 
@@ -202,7 +207,7 @@ Violations of these invariants are security defects. The associated threats and 
 | Schema validation | implemented | implemented | implemented | implemented |
 | Deterministic policy | lexical path/access | exact TCP host and port, deny default | exact Tool/action | capability-first action match |
 | Complete operation retention | runtime type available | runtime type available | implemented by Tool gate | implemented |
-| OS resource binding | read-only Process mounts implemented; write and general file operations incomplete | not implemented | path/inode precheck only; OS binding not implemented | process-local only |
+| OS resource binding | read-only Process mounts and create-new write adapter implemented; Process writes and general file operations incomplete | not implemented | path/inode precheck only; OS binding not implemented | process-local only |
 | Restart recovery | no sensitive Task input | no sensitive Task input | no pending operation | public Task state only |
 
 The matrix must be read literally. A policy check without OS resource binding is not complete Capability enforcement.

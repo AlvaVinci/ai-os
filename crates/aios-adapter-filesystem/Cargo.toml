@@ -1,0 +1,18 @@
+[package]
+name = "aios-adapter-filesystem"
+version = "0.1.0"
+description = "Descriptor-relative write-only Filesystem Adapter for AI OS"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+aios-core = { path = "../aios-core" }
+aios-runtime = { path = "../aios-runtime" }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+rustix.workspace = true

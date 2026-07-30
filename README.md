@@ -68,6 +68,7 @@ Read more:
 - [Approval grants](docs/approval-grants.md)
 - [Agent runtime and Model Adapter contract](docs/agent-runtime.md)
 - [Tool adapter](docs/tool-adapter.md)
+- [Filesystem adapter](docs/filesystem-adapter.md)
 - [Process adapter](docs/process-adapter.md)
 - [Developer workloads and benchmarks](benchmarks/README.md)
 - [Architecture decisions](docs/adr/README.md)
@@ -113,13 +114,14 @@ Implemented:
 - synchronous single-Task Agent execution with bounded model turns and approval-aware Tool routing
 - bounded in-process Tool Catalog and Handler adapter without shell execution
 - bounded child-process Tool handler with explicit executable identity, argument policy, clean environment, and direct-child timeout
+- experimental Linux descriptor-relative create-new Filesystem Adapter with exact write Capability and approval enforcement
 - Task Budget propagation through the Tool and Agent path with atomic terminal `BUDGET_EXCEEDED` Events
 - experimental Linux x86_64 Bubblewrap launch plan with a content-addressed sealed minimal rootfs, fresh Task-ID-scoped scratch, namespace isolation, deny-by-construction host network, a sealed seccomp deny policy, and Task-bound cgroup CPU/memory enforcement
 - three versioned developer workload fixtures with tested Capability and approval boundaries
 
 Not implemented yet:
 
-- operating-system enforcement of capabilities
+- complete operating-system enforcement of filesystem, network, and Tool capabilities
 - principal-separated approval API and complete Task-derived operating-system isolation adapters
 - post-v0.1 encrypted Task input and resumable execution recovery
 - real local model inference and release-verified out-of-process Tool isolation
