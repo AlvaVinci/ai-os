@@ -24,5 +24,6 @@ Index:
 - [ADR-0011: Bind the stable Task Budget to isolated process execution](0011-bind-task-budget-to-process-execution.md)
 - [ADR-0012: Reconcile stale Task cgroups during non-resumable startup](0012-reconcile-stale-task-cgroups-on-startup.md)
 - [ADR-0013: Bind Task read Capabilities to opened filesystem objects](0013-descriptor-bound-read-capabilities.md)
+- [ADR-0014: Enforce write-only Capabilities with create-new filesystem operations](0014-create-new-write-filesystem-adapter.md)
 
 New ADRs should state context, decision, consequences, alternatives, and related security requirements. Existing ADRs are immutable except for status and supersession links; changed decisions receive a new record.

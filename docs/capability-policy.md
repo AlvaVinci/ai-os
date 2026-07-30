@@ -34,6 +34,8 @@ Requested paths, network destinations, tool names, and action names are not copi
 
 These rules are lexical. Before performing an operation, a filesystem adapter must also enforce the resolved path and prevent symlink escapes, time-of-check/time-of-use races, inherited file-descriptor access, mount changes, and subprocess bypasses.
 
+The experimental Linux [Filesystem Adapter](filesystem-adapter.md) enforces a narrow create-new `write` operation from a retained root descriptor. It does not implement reads, overwrite, deletion, directory changes, general filesystem access, or subprocess authority. The Process Adapter separately implements descriptor-bound read-only mounts and still rejects write mounts.
+
 ## Network semantics
 
 - Network access is denied by default.
@@ -63,4 +65,4 @@ The policy engine answers whether an operation may proceed. It does not make the
 5. apply operating-system isolation and resource limits;
 6. record a resource-free audit event for the decision.
 
-`aios-runtime` now provides `ExecutionGate`, which retains the complete adapter operation while approval is pending and invokes the adapter only after allow or successful grant consumption. The gate and in-process Tool Adapter do not provide operating-system isolation by themselves. Filesystem, network, out-of-process Tool, and model adapters must still enforce resolved resources, subprocess boundaries, and resource limits, so this module must not be described as complete operating-system capability enforcement.
+`aios-runtime` now provides `ExecutionGate`, which retains the complete adapter operation while approval is pending and invokes the adapter only after allow or successful grant consumption. The gate and in-process Tool Adapter do not provide operating-system isolation by themselves. The Filesystem Adapter and Process read mounts implement only the documented narrow Linux subsets. Filesystem, network, out-of-process Tool, and model adapters must still complete resolved-resource, subprocess, and resource-limit enforcement, so this module must not be described as complete operating-system Capability enforcement.
