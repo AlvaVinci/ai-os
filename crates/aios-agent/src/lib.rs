@@ -1,19 +1,23 @@
 //! Bounded Agent execution and model adapter contracts for AI OS.
 //!
-//! Model decisions are untrusted proposals. [`AgentRuntime`] exposes only model-visible Tool route
-//! names, prepares operations through the trusted Tool catalog, and executes them through the
-//! Capability and approval gate.
+//! Model decisions are untrusted proposals. [`AgentRuntime`] exposes only Task-granted operation
+//! scopes, prepares operations through trusted catalogs, and executes them through Capability and
+//! approval gates.
 
 use std::collections::VecDeque;
 use std::error::Error;
 use std::fmt::{self, Display, Formatter};
 use std::time::Duration;
 
+use aios_adapter_network::{
+    MAX_NETWORK_HOST_BYTES, MAX_TCP_REQUEST_BYTES, NetworkAdapterError, NetworkCatalog,
+    NetworkExecutionGate,
+};
 use aios_adapter_tool::{
     MAX_ARGUMENT_BYTES, MAX_ARGUMENTS, MAX_IDENTIFIER_BYTES, MAX_TOTAL_ARGUMENT_BYTES,
-    ToolAdapterError, ToolCatalog, ToolExecutionGate, ToolOutput,
+    ToolAdapterError, ToolCatalog, ToolExecutionGate,
 };
-use aios_core::{DenialReason, ErrorCode};
+use aios_core::{DenialReason, ErrorCode, NetworkDestination};
 use aios_runtime::{
     ApprovalId, ApprovalRequest, EventStore, ExecutionError, ExecutionOutcome, SupervisorError,
     TaskId, TaskSupervisor,
@@ -63,6 +67,7 @@ impl Default for AgentConfig {
 pub struct ModelStartRequest<'a> {
     goal: &'a str,
     tool_routes: &'a [&'a str],
+    network_destinations: &'a [NetworkDestination],
 }
 
 impl<'a> ModelStartRequest<'a> {
@@ -75,15 +80,20 @@ impl<'a> ModelStartRequest<'a> {
     pub fn tool_routes(&self) -> &[&str] {
         self.tool_routes
     }
+
+    #[must_use]
+    pub fn network_destinations(&self) -> &[NetworkDestination] {
+        self.network_destinations
+    }
 }
 
 /// Sensitive input for one bounded model turn.
 ///
-/// Only the immediately preceding Tool output is exposed. This type intentionally does not
+/// Only the immediately preceding operation output is exposed. This type intentionally does not
 /// implement `Debug` or serialization.
 pub struct ModelTurnRequest<'a> {
     step: u16,
-    previous_tool_output: Option<&'a [u8]>,
+    previous_operation_output: Option<&'a [u8]>,
 }
 
 impl<'a> ModelTurnRequest<'a> {
@@ -94,7 +104,12 @@ impl<'a> ModelTurnRequest<'a> {
 
     #[must_use]
     pub const fn previous_tool_output(&self) -> Option<&[u8]> {
-        self.previous_tool_output
+        self.previous_operation_output
+    }
+
+    #[must_use]
+    pub const fn previous_operation_output(&self) -> Option<&[u8]> {
+        self.previous_operation_output
     }
 }
 
@@ -146,6 +161,11 @@ enum ModelDecisionKind {
         route: String,
         arguments: Vec<String>,
     },
+    TcpExchange {
+        host: String,
+        port: u16,
+        request: Vec<u8>,
+    },
 }
 
 /// Validated model proposal. Capability and approval identifiers are never model-controlled.
@@ -170,6 +190,27 @@ impl ModelDecision {
             kind: ModelDecisionKind::CallTool { route, arguments },
         })
     }
+
+    pub fn tcp_exchange(
+        host: String,
+        port: u16,
+        request: Vec<u8>,
+    ) -> Result<Self, ModelDecisionError> {
+        if host.is_empty()
+            || host.len() > MAX_NETWORK_HOST_BYTES
+            || port == 0
+            || request.len() > MAX_TCP_REQUEST_BYTES
+        {
+            return Err(ModelDecisionError::InvalidNetworkRequest);
+        }
+        Ok(Self {
+            kind: ModelDecisionKind::TcpExchange {
+                host,
+                port,
+                request,
+            },
+        })
+    }
 }
 
 /// Stable validation category for one untrusted model proposal.
@@ -177,6 +218,7 @@ impl ModelDecision {
 pub enum ModelDecisionError {
     InvalidFinalOutput,
     InvalidToolRequest,
+    InvalidNetworkRequest,
 }
 
 impl Display for ModelDecisionError {
@@ -184,6 +226,7 @@ impl Display for ModelDecisionError {
         let message = match self {
             Self::InvalidFinalOutput => "invalid final model output",
             Self::InvalidToolRequest => "invalid model Tool request",
+            Self::InvalidNetworkRequest => "invalid model Network request",
         };
         formatter.write_str(message)
     }
@@ -257,8 +300,25 @@ struct ActiveSession<S> {
     task_id: TaskId,
     model: S,
     next_step: u16,
-    previous_tool_output: Option<ToolOutput>,
-    pending_approval: Option<ApprovalId>,
+    previous_operation_output: Option<Vec<u8>>,
+    pending_approval: Option<PendingApproval>,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum PendingAdapter {
+    Tool,
+    Network,
+}
+
+#[derive(Clone, Copy)]
+struct PendingApproval {
+    approval_id: ApprovalId,
+    adapter: PendingAdapter,
+}
+
+struct AgentNetwork {
+    catalog: NetworkCatalog,
+    gate: NetworkExecutionGate,
 }
 
 /// Synchronous single-Task Agent runtime with no raw Tool adapter escape hatch.
@@ -266,6 +326,7 @@ pub struct AgentRuntime<M: ModelAdapter> {
     model_adapter: M,
     tool_catalog: ToolCatalog,
     tool_gate: ToolExecutionGate,
+    network: Option<AgentNetwork>,
     config: AgentConfig,
     active: Option<ActiveSession<M::Session>>,
 }
@@ -282,9 +343,20 @@ impl<M: ModelAdapter> AgentRuntime<M> {
             model_adapter,
             tool_catalog,
             tool_gate,
+            network: None,
             config,
             active: None,
         }
+    }
+
+    /// Enables bounded direct TCP proposals through the Network Capability gate.
+    #[must_use]
+    pub fn with_network_gate(mut self, gate: NetworkExecutionGate) -> Self {
+        self.network = Some(AgentNetwork {
+            catalog: NetworkCatalog::new(),
+            gate,
+        });
+        self
     }
 
     /// Starts one queued Task and drives it until completion, denial, or approval wait.
@@ -302,9 +374,31 @@ impl<M: ModelAdapter> AgentRuntime<M> {
             .tool_catalog
             .route_names_for_tools(input.capability_tools())
             .collect();
+        let network_destinations: Vec<NetworkDestination> = self
+            .network
+            .as_ref()
+            .map(|network| {
+                input
+                    .network_destinations()
+                    .iter()
+                    .filter(|destination| {
+                        network
+                            .catalog
+                            .prepare_tcp_exchange(
+                                destination.host.clone(),
+                                destination.port,
+                                Vec::new(),
+                            )
+                            .is_ok()
+                    })
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default();
         let model = match self.model_adapter.start_session(ModelStartRequest {
             goal: input.goal(),
             tool_routes: &routes,
+            network_destinations: &network_destinations,
         }) {
             Ok(model) => model,
             Err(_) => {
@@ -316,7 +410,7 @@ impl<M: ModelAdapter> AgentRuntime<M> {
             task_id,
             model,
             next_step: 1,
-            previous_tool_output: None,
+            previous_operation_output: None,
             pending_approval: None,
         });
         self.drive(supervisor)
@@ -328,22 +422,45 @@ impl<M: ModelAdapter> AgentRuntime<M> {
         supervisor: &mut TaskSupervisor<S>,
         approval_id: ApprovalId,
     ) -> Result<AgentRunOutcome, AgentError> {
-        let task_id = self.require_pending(approval_id)?;
-        match self.tool_gate.approve_and_execute(supervisor, approval_id) {
-            Ok(executed) => {
-                let active = self.active.as_mut().ok_or(AgentError::InvalidState)?;
-                active.pending_approval = None;
-                active.previous_tool_output = Some(executed.output);
-                self.drive(supervisor)
+        let (task_id, adapter) = self.require_pending(approval_id)?;
+        match adapter {
+            PendingAdapter::Tool => {
+                match self.tool_gate.approve_and_execute(supervisor, approval_id) {
+                    Ok(executed) => {
+                        self.resume_with_output(supervisor, executed.output.into_bytes())
+                    }
+                    Err(ExecutionError::Supervisor(error)) => Err(AgentError::Supervisor(error)),
+                    Err(ExecutionError::Adapter(ToolAdapterError::BudgetExceeded)) => {
+                        self.fail_budget_active(supervisor, task_id)?;
+                        Err(AgentError::BudgetExceeded)
+                    }
+                    Err(ExecutionError::Adapter(_) | ExecutionError::OperationNotFound) => {
+                        self.fail_active(supervisor, task_id)?;
+                        Err(AgentError::ToolFailed)
+                    }
+                }
             }
-            Err(ExecutionError::Supervisor(error)) => Err(AgentError::Supervisor(error)),
-            Err(ExecutionError::Adapter(ToolAdapterError::BudgetExceeded)) => {
-                self.fail_budget_active(supervisor, task_id)?;
-                Err(AgentError::BudgetExceeded)
-            }
-            Err(ExecutionError::Adapter(_) | ExecutionError::OperationNotFound) => {
-                self.fail_active(supervisor, task_id)?;
-                Err(AgentError::ToolFailed)
+            PendingAdapter::Network => {
+                let result = self
+                    .network
+                    .as_mut()
+                    .ok_or(AgentError::InvalidState)?
+                    .gate
+                    .approve_and_execute(supervisor, approval_id);
+                match result {
+                    Ok(executed) => {
+                        self.resume_with_output(supervisor, executed.output.into_bytes())
+                    }
+                    Err(ExecutionError::Supervisor(error)) => Err(AgentError::Supervisor(error)),
+                    Err(ExecutionError::Adapter(NetworkAdapterError::BudgetExceeded)) => {
+                        self.fail_budget_active(supervisor, task_id)?;
+                        Err(AgentError::BudgetExceeded)
+                    }
+                    Err(ExecutionError::Adapter(_) | ExecutionError::OperationNotFound) => {
+                        self.fail_active(supervisor, task_id)?;
+                        Err(AgentError::NetworkFailed)
+                    }
+                }
             }
         }
     }
@@ -354,10 +471,20 @@ impl<M: ModelAdapter> AgentRuntime<M> {
         supervisor: &mut TaskSupervisor<S>,
         approval_id: ApprovalId,
     ) -> Result<(), AgentError> {
-        let _task_id = self.require_pending(approval_id)?;
-        self.tool_gate
-            .deny(supervisor, approval_id)
-            .map_err(map_tool_error)?;
+        let (_task_id, adapter) = self.require_pending(approval_id)?;
+        match adapter {
+            PendingAdapter::Tool => self
+                .tool_gate
+                .deny(supervisor, approval_id)
+                .map_err(map_tool_error)?,
+            PendingAdapter::Network => self
+                .network
+                .as_mut()
+                .ok_or(AgentError::InvalidState)?
+                .gate
+                .deny(supervisor, approval_id)
+                .map_err(map_network_error)?,
+        };
         self.active = None;
         Ok(())
     }
@@ -370,11 +497,13 @@ impl<M: ModelAdapter> AgentRuntime<M> {
         if let Some(task_id) = self.active.as_ref().map(|active| active.task_id)
             && supervisor.wall_time_exceeded(task_id)?
         {
+            let adapter = self.pending_adapter().unwrap_or(PendingAdapter::Tool);
             self.fail_budget_active(supervisor, task_id)?;
-            self.tool_gate.expire(supervisor).map_err(map_tool_error)?;
+            self.expire_adapter(supervisor, adapter)?;
             return Err(AgentError::BudgetExceeded);
         }
-        let expired = self.tool_gate.expire(supervisor).map_err(map_tool_error)?;
+        let adapter = self.pending_adapter().unwrap_or(PendingAdapter::Tool);
+        let expired = self.expire_adapter(supervisor, adapter)?;
         if self.active.as_ref().is_some_and(|active| {
             supervisor
                 .get(active.task_id)
@@ -385,7 +514,7 @@ impl<M: ModelAdapter> AgentRuntime<M> {
         Ok(expired)
     }
 
-    /// Cancels one Task through the Tool gate and drops its model session.
+    /// Cancels one Task through its active operation gate and drops its model session.
     pub fn cancel<S: EventStore>(
         &mut self,
         supervisor: &mut TaskSupervisor<S>,
@@ -398,10 +527,20 @@ impl<M: ModelAdapter> AgentRuntime<M> {
         {
             return Err(AgentError::InvalidState);
         }
-        let changed = self
-            .tool_gate
-            .cancel(supervisor, task_id)
-            .map_err(map_tool_error)?;
+        let adapter = self.pending_adapter().unwrap_or(PendingAdapter::Tool);
+        let changed = match adapter {
+            PendingAdapter::Tool => self
+                .tool_gate
+                .cancel(supervisor, task_id)
+                .map_err(map_tool_error)?,
+            PendingAdapter::Network => self
+                .network
+                .as_mut()
+                .ok_or(AgentError::InvalidState)?
+                .gate
+                .cancel(supervisor, task_id)
+                .map_err(map_network_error)?,
+        };
         self.active = None;
         Ok(changed)
     }
@@ -438,10 +577,7 @@ impl<M: ModelAdapter> AgentRuntime<M> {
                 let active = self.active.as_mut().ok_or(AgentError::InvalidState)?;
                 let request = ModelTurnRequest {
                     step: active.next_step,
-                    previous_tool_output: active
-                        .previous_tool_output
-                        .as_ref()
-                        .map(ToolOutput::as_bytes),
+                    previous_operation_output: active.previous_operation_output.as_deref(),
                 };
                 match active.model.decide(request) {
                     Ok(decision) => decision,
@@ -489,7 +625,7 @@ impl<M: ModelAdapter> AgentRuntime<M> {
                             self.active
                                 .as_mut()
                                 .ok_or(AgentError::InvalidState)?
-                                .previous_tool_output = Some(executed.output);
+                                .previous_operation_output = Some(executed.output.into_bytes());
                         }
                         Ok(ExecutionOutcome::Denied { reason }) => {
                             self.fail_active(supervisor, task_id)?;
@@ -499,7 +635,10 @@ impl<M: ModelAdapter> AgentRuntime<M> {
                             self.active
                                 .as_mut()
                                 .ok_or(AgentError::InvalidState)?
-                                .pending_approval = Some(request.approval_id);
+                                .pending_approval = Some(PendingApproval {
+                                approval_id: request.approval_id,
+                                adapter: PendingAdapter::Tool,
+                            });
                             return Ok(AgentRunOutcome::WaitingApproval(request));
                         }
                         Err(ExecutionError::Supervisor(error)) => {
@@ -516,16 +655,113 @@ impl<M: ModelAdapter> AgentRuntime<M> {
                         }
                     }
                 }
+                ModelDecisionKind::TcpExchange {
+                    host,
+                    port,
+                    request,
+                } => {
+                    let Some(network) = self.network.as_ref() else {
+                        self.fail_active(supervisor, task_id)?;
+                        return Err(AgentError::InvalidDecision);
+                    };
+                    let operation = match network.catalog.prepare_tcp_exchange(host, port, request)
+                    {
+                        Ok(operation) => operation,
+                        Err(_) => {
+                            self.fail_active(supervisor, task_id)?;
+                            return Err(AgentError::InvalidDecision);
+                        }
+                    };
+                    let outcome = self
+                        .network
+                        .as_mut()
+                        .ok_or(AgentError::InvalidState)?
+                        .gate
+                        .request(supervisor, task_id, operation, self.config.approval_ttl);
+                    match outcome {
+                        Ok(ExecutionOutcome::Executed(executed)) => {
+                            self.active
+                                .as_mut()
+                                .ok_or(AgentError::InvalidState)?
+                                .previous_operation_output = Some(executed.output.into_bytes());
+                        }
+                        Ok(ExecutionOutcome::Denied { reason }) => {
+                            self.fail_active(supervisor, task_id)?;
+                            return Ok(AgentRunOutcome::Denied { reason });
+                        }
+                        Ok(ExecutionOutcome::ApprovalRequired(request)) => {
+                            self.active
+                                .as_mut()
+                                .ok_or(AgentError::InvalidState)?
+                                .pending_approval = Some(PendingApproval {
+                                approval_id: request.approval_id,
+                                adapter: PendingAdapter::Network,
+                            });
+                            return Ok(AgentRunOutcome::WaitingApproval(request));
+                        }
+                        Err(ExecutionError::Supervisor(error)) => {
+                            self.active = None;
+                            return Err(AgentError::Supervisor(error));
+                        }
+                        Err(ExecutionError::Adapter(NetworkAdapterError::BudgetExceeded)) => {
+                            self.fail_budget_active(supervisor, task_id)?;
+                            return Err(AgentError::BudgetExceeded);
+                        }
+                        Err(ExecutionError::Adapter(_) | ExecutionError::OperationNotFound) => {
+                            self.fail_active(supervisor, task_id)?;
+                            return Err(AgentError::NetworkFailed);
+                        }
+                    }
+                }
             }
         }
     }
 
-    fn require_pending(&self, approval_id: ApprovalId) -> Result<TaskId, AgentError> {
+    fn require_pending(
+        &self,
+        approval_id: ApprovalId,
+    ) -> Result<(TaskId, PendingAdapter), AgentError> {
         let active = self.active.as_ref().ok_or(AgentError::InvalidState)?;
-        if active.pending_approval != Some(approval_id) {
+        let pending = active.pending_approval.ok_or(AgentError::InvalidState)?;
+        if pending.approval_id != approval_id {
             return Err(AgentError::InvalidState);
         }
-        Ok(active.task_id)
+        Ok((active.task_id, pending.adapter))
+    }
+
+    fn pending_adapter(&self) -> Option<PendingAdapter> {
+        self.active
+            .as_ref()
+            .and_then(|active| active.pending_approval)
+            .map(|pending| pending.adapter)
+    }
+
+    fn resume_with_output<S: EventStore>(
+        &mut self,
+        supervisor: &mut TaskSupervisor<S>,
+        output: Vec<u8>,
+    ) -> Result<AgentRunOutcome, AgentError> {
+        let active = self.active.as_mut().ok_or(AgentError::InvalidState)?;
+        active.pending_approval = None;
+        active.previous_operation_output = Some(output);
+        self.drive(supervisor)
+    }
+
+    fn expire_adapter<S: EventStore>(
+        &mut self,
+        supervisor: &mut TaskSupervisor<S>,
+        adapter: PendingAdapter,
+    ) -> Result<usize, AgentError> {
+        match adapter {
+            PendingAdapter::Tool => self.tool_gate.expire(supervisor).map_err(map_tool_error),
+            PendingAdapter::Network => self
+                .network
+                .as_mut()
+                .ok_or(AgentError::InvalidState)?
+                .gate
+                .expire(supervisor)
+                .map_err(map_network_error),
+        }
     }
 
     fn fail_active<S: EventStore>(
@@ -565,6 +801,7 @@ pub enum AgentError {
     StepLimitExceeded,
     ModelFailed,
     ToolFailed,
+    NetworkFailed,
     BudgetExceeded,
     Supervisor(SupervisorError),
 }
@@ -581,6 +818,7 @@ impl AgentError {
             | Self::StepLimitExceeded
             | Self::ModelFailed
             | Self::ToolFailed
+            | Self::NetworkFailed
             | Self::Supervisor(_) => None,
         }
     }
@@ -602,6 +840,7 @@ impl Display for AgentError {
             Self::StepLimitExceeded => "Agent step limit exceeded",
             Self::ModelFailed => "model adapter failed",
             Self::ToolFailed => "Tool execution failed",
+            Self::NetworkFailed => "Network execution failed",
             Self::BudgetExceeded => "Task Budget exceeded",
             Self::Supervisor(_) => "Task supervision failed",
         };
@@ -622,6 +861,14 @@ fn map_tool_error(error: ExecutionError<ToolAdapterError>) -> AgentError {
         ExecutionError::Supervisor(error) => AgentError::Supervisor(error),
         ExecutionError::Adapter(ToolAdapterError::BudgetExceeded) => AgentError::BudgetExceeded,
         ExecutionError::Adapter(_) | ExecutionError::OperationNotFound => AgentError::ToolFailed,
+    }
+}
+
+fn map_network_error(error: ExecutionError<NetworkAdapterError>) -> AgentError {
+    match error {
+        ExecutionError::Supervisor(error) => AgentError::Supervisor(error),
+        ExecutionError::Adapter(NetworkAdapterError::BudgetExceeded) => AgentError::BudgetExceeded,
+        ExecutionError::Adapter(_) | ExecutionError::OperationNotFound => AgentError::NetworkFailed,
     }
 }
 
@@ -657,12 +904,17 @@ fn are_valid_arguments(arguments: &[String]) -> bool {
 mod tests {
     use std::cell::Cell;
     use std::cell::RefCell;
+    use std::io::{ErrorKind, Read, Write};
+    use std::net::TcpListener;
     use std::rc::Rc;
+    use std::thread;
     use std::time::Duration;
 
+    use aios_adapter_network::{MAX_TCP_REQUEST_BYTES, NetworkExecutionGate};
     use aios_adapter_tool::{ToolAdapterBuilder, ToolFailure, ToolOutput};
     use aios_core::{
-        ApprovalPolicy, Budget, CapabilitySet, ErrorCode, NetworkPolicy, TaskSpec, TaskState,
+        ApprovalPolicy, Budget, CapabilitySet, ErrorCode, NetworkDestination, NetworkPolicy,
+        NetworkTransport, TaskSpec, TaskState,
     };
     use aios_runtime::{
         ApprovalId, InMemoryEventStore, SubmitResult, TaskEventKind, TaskSupervisor,
@@ -697,16 +949,34 @@ mod tests {
         }
     }
 
+    fn network_task(
+        idempotency_key: &str,
+        host: &str,
+        port: u16,
+        required_for: &[&str],
+    ) -> TaskSpec {
+        let mut spec = task(idempotency_key, required_for, &[]);
+        spec.capabilities.network = NetworkPolicy::Allow {
+            destinations: vec![NetworkDestination {
+                host: host.to_owned(),
+                transport: NetworkTransport::Tcp,
+                port,
+            }],
+        };
+        spec
+    }
+
     fn submit(
         supervisor: &mut TaskSupervisor,
         idempotency_key: &str,
         required_for: &[&str],
         tools: &[&str],
     ) -> aios_runtime::TaskId {
-        let SubmitResult::Accepted(task) = supervisor
-            .submit(task(idempotency_key, required_for, tools))
-            .expect("submit Task")
-        else {
+        submit_spec(supervisor, task(idempotency_key, required_for, tools))
+    }
+
+    fn submit_spec(supervisor: &mut TaskSupervisor, spec: TaskSpec) -> aios_runtime::TaskId {
+        let SubmitResult::Accepted(task) = supervisor.submit(spec).expect("submit Task") else {
             panic!("expected accepted Task");
         };
         task.task_id
@@ -753,6 +1023,18 @@ mod tests {
                 vec!["x".repeat(MAX_ARGUMENT_BYTES + 1)]
             ),
             Err(ModelDecisionError::InvalidToolRequest)
+        ));
+        assert!(matches!(
+            ModelDecision::tcp_exchange("127.0.0.1".to_owned(), 0, Vec::new()),
+            Err(ModelDecisionError::InvalidNetworkRequest)
+        ));
+        assert!(matches!(
+            ModelDecision::tcp_exchange(
+                "127.0.0.1".to_owned(),
+                443,
+                vec![0; MAX_TCP_REQUEST_BYTES + 1]
+            ),
+            Err(ModelDecisionError::InvalidNetworkRequest)
         ));
     }
 
@@ -875,6 +1157,354 @@ mod tests {
             Ok(AgentRunOutcome::Completed(_))
         ));
         assert!(routes.borrow().is_empty());
+    }
+
+    struct NetworkScopeRecordingAdapter {
+        count: Rc<Cell<usize>>,
+    }
+
+    impl ModelAdapter for NetworkScopeRecordingAdapter {
+        type Error = &'static str;
+        type Session = FinishingSession;
+
+        fn start_session(
+            &mut self,
+            request: ModelStartRequest<'_>,
+        ) -> Result<Self::Session, Self::Error> {
+            self.count.set(request.network_destinations().len());
+            Ok(FinishingSession)
+        }
+    }
+
+    #[test]
+    fn exposes_only_destinations_supported_by_the_configured_network_gate() {
+        let (catalog, gate) = tools(Rc::new(RefCell::new(Vec::new())));
+        let unavailable_count = Rc::new(Cell::new(usize::MAX));
+        let mut runtime = AgentRuntime::new(
+            NetworkScopeRecordingAdapter {
+                count: Rc::clone(&unavailable_count),
+            },
+            catalog,
+            gate,
+            AgentConfig::default(),
+        );
+        let mut supervisor = TaskSupervisor::default();
+        let task_id = submit_spec(
+            &mut supervisor,
+            network_task("agent-network-hidden", "127.0.0.1", 443, &[]),
+        );
+        assert!(matches!(
+            runtime.start(&mut supervisor, task_id),
+            Ok(AgentRunOutcome::Completed(_))
+        ));
+        assert_eq!(unavailable_count.get(), 0);
+
+        let (catalog, gate) = tools(Rc::new(RefCell::new(Vec::new())));
+        let unsupported_count = Rc::new(Cell::new(usize::MAX));
+        let network_gate =
+            NetworkExecutionGate::new(Duration::from_secs(2)).expect("create Network gate");
+        let mut runtime = AgentRuntime::new(
+            NetworkScopeRecordingAdapter {
+                count: Rc::clone(&unsupported_count),
+            },
+            catalog,
+            gate,
+            AgentConfig::default(),
+        )
+        .with_network_gate(network_gate);
+        let mut supervisor = TaskSupervisor::default();
+        let task_id = submit_spec(
+            &mut supervisor,
+            network_task("agent-hostname-hidden", "api.example.com", 443, &[]),
+        );
+        assert!(matches!(
+            runtime.start(&mut supervisor, task_id),
+            Ok(AgentRunOutcome::Completed(_))
+        ));
+        assert_eq!(unsupported_count.get(), 0);
+    }
+
+    struct NetworkObservingAdapter {
+        port: u16,
+    }
+
+    struct NetworkObservingSession {
+        port: u16,
+        turn: u8,
+    }
+
+    impl ModelAdapter for NetworkObservingAdapter {
+        type Error = &'static str;
+        type Session = NetworkObservingSession;
+
+        fn start_session(
+            &mut self,
+            request: ModelStartRequest<'_>,
+        ) -> Result<Self::Session, Self::Error> {
+            let [destination] = request.network_destinations() else {
+                return Err("expected one Network destination");
+            };
+            if destination.host != "127.0.0.1"
+                || destination.transport != NetworkTransport::Tcp
+                || destination.port != self.port
+            {
+                return Err("unexpected Network destination");
+            }
+            Ok(NetworkObservingSession {
+                port: self.port,
+                turn: 0,
+            })
+        }
+    }
+
+    impl ModelSession for NetworkObservingSession {
+        type Error = &'static str;
+
+        fn decide(&mut self, request: ModelTurnRequest<'_>) -> Result<ModelDecision, Self::Error> {
+            let decision = match self.turn {
+                0 if request.previous_operation_output().is_none() => ModelDecision::tcp_exchange(
+                    "127.0.0.1".to_owned(),
+                    self.port,
+                    b"agent request".to_vec(),
+                )
+                .map_err(|_| "invalid Network decision")?,
+                1 if request.previous_operation_output() == Some(b"agent response".as_slice()) => {
+                    ModelDecision::finish("network completed".to_owned())
+                        .map_err(|_| "invalid final decision")?
+                }
+                _ => return Err("unexpected Network observation"),
+            };
+            self.turn += 1;
+            Ok(decision)
+        }
+    }
+
+    #[test]
+    fn routes_task_scoped_network_exchange_and_returns_bounded_response() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind listener");
+        let port = listener.local_addr().expect("listener address").port();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept connection");
+            let mut request = Vec::new();
+            stream.read_to_end(&mut request).expect("read request");
+            stream.write_all(b"agent response").expect("write response");
+            request
+        });
+        let (catalog, gate) = tools(Rc::new(RefCell::new(Vec::new())));
+        let network_gate =
+            NetworkExecutionGate::new(Duration::from_secs(2)).expect("create Network gate");
+        let mut runtime = AgentRuntime::new(
+            NetworkObservingAdapter { port },
+            catalog,
+            gate,
+            AgentConfig::default(),
+        )
+        .with_network_gate(network_gate);
+        let mut supervisor = TaskSupervisor::default();
+        let task_id = submit_spec(
+            &mut supervisor,
+            network_task("agent-network", "127.0.0.1", port, &[]),
+        );
+
+        let outcome = runtime
+            .start(&mut supervisor, task_id)
+            .expect("run Network Agent");
+
+        let AgentRunOutcome::Completed(output) = outcome else {
+            panic!("expected completion");
+        };
+        assert_eq!(output.as_str(), "network completed");
+        assert_eq!(server.join().expect("join server"), b"agent request");
+        assert_eq!(
+            supervisor.get(task_id).expect("Task exists").state,
+            TaskState::Succeeded
+        );
+    }
+
+    #[test]
+    fn network_approval_connects_only_after_exact_resume() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind listener");
+        listener
+            .set_nonblocking(true)
+            .expect("set nonblocking listener");
+        let port = listener.local_addr().expect("listener address").port();
+        let (catalog, gate) = tools(Rc::new(RefCell::new(Vec::new())));
+        let network_gate =
+            NetworkExecutionGate::new(Duration::from_secs(2)).expect("create Network gate");
+        let mut runtime = AgentRuntime::new(
+            NetworkObservingAdapter { port },
+            catalog,
+            gate,
+            AgentConfig::default(),
+        )
+        .with_network_gate(network_gate);
+        let mut supervisor = TaskSupervisor::default();
+        let task_id = submit_spec(
+            &mut supervisor,
+            network_task(
+                "agent-network-approval",
+                "127.0.0.1",
+                port,
+                &["network.egress"],
+            ),
+        );
+
+        let AgentRunOutcome::WaitingApproval(request) = runtime
+            .start(&mut supervisor, task_id)
+            .expect("request Network approval")
+        else {
+            panic!("expected approval wait");
+        };
+        assert_eq!(
+            listener
+                .accept()
+                .expect_err("approval wait must not connect")
+                .kind(),
+            ErrorKind::WouldBlock
+        );
+        listener
+            .set_nonblocking(false)
+            .expect("restore blocking listener");
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept connection");
+            let mut bytes = Vec::new();
+            stream.read_to_end(&mut bytes).expect("read request");
+            stream.write_all(b"agent response").expect("write response");
+        });
+
+        let outcome = runtime
+            .approve_and_resume(&mut supervisor, request.approval_id)
+            .expect("approve Network operation");
+
+        assert!(matches!(outcome, AgentRunOutcome::Completed(_)));
+        server.join().expect("join server");
+        assert_eq!(
+            supervisor.get(task_id).expect("Task exists").state,
+            TaskState::Succeeded
+        );
+    }
+
+    #[test]
+    fn network_proposal_without_configured_gate_fails_without_connecting() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind listener");
+        listener
+            .set_nonblocking(true)
+            .expect("set nonblocking listener");
+        let port = listener.local_addr().expect("listener address").port();
+        let model = ScriptedModelAdapter::new(vec![
+            ModelDecision::tcp_exchange("127.0.0.1".to_owned(), port, b"must not connect".to_vec())
+                .expect("valid Network decision"),
+        ])
+        .expect("valid script");
+        let (catalog, gate) = tools(Rc::new(RefCell::new(Vec::new())));
+        let mut runtime = AgentRuntime::new(model, catalog, gate, AgentConfig::default());
+        let mut supervisor = TaskSupervisor::default();
+        let task_id = submit_spec(
+            &mut supervisor,
+            network_task("agent-network-unavailable", "127.0.0.1", port, &[]),
+        );
+
+        assert!(matches!(
+            runtime.start(&mut supervisor, task_id),
+            Err(AgentError::InvalidDecision)
+        ));
+        assert_eq!(
+            listener
+                .accept()
+                .expect_err("missing gate must not connect")
+                .kind(),
+            ErrorKind::WouldBlock
+        );
+        assert_eq!(
+            supervisor.get(task_id).expect("Task exists").state,
+            TaskState::Failed
+        );
+    }
+
+    #[test]
+    fn denied_network_destination_never_connects() {
+        let authorized = TcpListener::bind(("127.0.0.1", 0)).expect("bind authorized listener");
+        let authorized_port = authorized.local_addr().expect("authorized address").port();
+        let attempted = TcpListener::bind(("127.0.0.1", 0)).expect("bind attempted listener");
+        attempted
+            .set_nonblocking(true)
+            .expect("set nonblocking listener");
+        let attempted_port = attempted.local_addr().expect("attempted address").port();
+        let model = ScriptedModelAdapter::new(vec![
+            ModelDecision::tcp_exchange("127.0.0.1".to_owned(), attempted_port, b"denied".to_vec())
+                .expect("valid Network decision"),
+        ])
+        .expect("valid script");
+        let (catalog, gate) = tools(Rc::new(RefCell::new(Vec::new())));
+        let network_gate =
+            NetworkExecutionGate::new(Duration::from_secs(2)).expect("create Network gate");
+        let mut runtime = AgentRuntime::new(model, catalog, gate, AgentConfig::default())
+            .with_network_gate(network_gate);
+        let mut supervisor = TaskSupervisor::default();
+        let task_id = submit_spec(
+            &mut supervisor,
+            network_task("agent-network-denied", "127.0.0.1", authorized_port, &[]),
+        );
+
+        let outcome = runtime
+            .start(&mut supervisor, task_id)
+            .expect("policy denial is an Agent outcome");
+
+        assert!(matches!(outcome, AgentRunOutcome::Denied { .. }));
+        assert_eq!(
+            attempted
+                .accept()
+                .expect_err("denied destination must not connect")
+                .kind(),
+            ErrorKind::WouldBlock
+        );
+        drop(authorized);
+    }
+
+    #[test]
+    fn network_budget_failure_records_terminal_budget_event() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind listener");
+        let port = listener.local_addr().expect("listener address").port();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept connection");
+            let mut request = Vec::new();
+            stream.read_to_end(&mut request).expect("read request");
+            thread::sleep(Duration::from_millis(1_500));
+        });
+        let model = ScriptedModelAdapter::new(vec![
+            ModelDecision::tcp_exchange("127.0.0.1".to_owned(), port, b"bounded request".to_vec())
+                .expect("valid Network decision"),
+        ])
+        .expect("valid script");
+        let (catalog, gate) = tools(Rc::new(RefCell::new(Vec::new())));
+        let network_gate =
+            NetworkExecutionGate::new(Duration::from_secs(5)).expect("create Network gate");
+        let mut runtime = AgentRuntime::new(model, catalog, gate, AgentConfig::default())
+            .with_network_gate(network_gate);
+        let mut supervisor = TaskSupervisor::default();
+        let mut spec = network_task("agent-network-budget", "127.0.0.1", port, &[]);
+        spec.budget.wall_time_seconds = 1;
+        let task_id = submit_spec(&mut supervisor, spec);
+
+        assert!(matches!(
+            runtime.start(&mut supervisor, task_id),
+            Err(AgentError::BudgetExceeded)
+        ));
+        server.join().expect("join server");
+        assert_eq!(
+            supervisor.get(task_id).expect("Task exists").state,
+            TaskState::Failed
+        );
+        assert!(
+            supervisor
+                .events(task_id, 0)
+                .expect("list Events")
+                .iter()
+                .any(|event| event.kind
+                    == TaskEventKind::TaskFailed {
+                        code: ErrorCode::BudgetExceeded,
+                    })
+        );
     }
 
     struct ObservingAdapter;

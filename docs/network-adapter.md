@@ -19,6 +19,8 @@ Trusted integration code constructs `NetworkExecutionGate` with a nonzero timeou
 
 The raw adapter and socket remain private. Approval retains the exact destination, request bytes, and Task context without connecting early or resetting the Task wall-time. Returned response bytes are bounded, untrusted, non-debuggable, and non-serializable.
 
+`AgentRuntime` can optionally own this gate. It advertises only Task destinations accepted by the IP-only catalog, reconstructs each bounded model proposal through that catalog, and returns only the bounded response to the next model turn. A missing gate, unsupported destination, or Capability denial fails without connecting.
+
 ## Destination binding
 
 This increment accepts only explicit IPv4 and IPv6 address strings. It constructs one `SocketAddr`, calls [`TcpStream::connect_timeout`](https://doc.rust-lang.org/stable/std/net/struct.TcpStream.html#method.connect_timeout) for that single address, and verifies `peer_addr` before sending bytes.
@@ -71,8 +73,9 @@ Tests cover:
 - no connection before approval;
 - no connection when approval outlives the original Task wall-time;
 - Task wall-time enforcement for a stalled in-flight response;
+- Agent proposal execution, exact approval resume, denial, missing-gate, and terminal Budget propagation;
 - no connection after Capability denial;
 - exact request and bounded response transfer;
 - oversized response rejection.
 
-See [ADR-0015](adr/0015-ip-bound-tcp-network-adapter.md), [ADR-0016](adr/0016-bind-resource-adapters-to-task-wall-time.md), the [Capability model](capability-model.md), and the [Threat model](threat-model.md).
+See [ADR-0015](adr/0015-ip-bound-tcp-network-adapter.md), [ADR-0016](adr/0016-bind-resource-adapters-to-task-wall-time.md), [ADR-0017](adr/0017-route-agent-network-proposals-through-network-gate.md), the [Capability model](capability-model.md), and the [Threat model](threat-model.md).

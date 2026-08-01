@@ -5,8 +5,8 @@ use std::time::{Duration, Instant};
 
 use aios_core::{
     Budget, CapabilityPolicy, CapabilityRequest, DenialReason, ErrorCode, FileAccess,
-    FileCapability, NetworkTransport, PolicyDecision, StateTransitionError, TaskSpec, TaskState,
-    ValidationErrors,
+    FileCapability, NetworkDestination, NetworkPolicy, NetworkTransport, PolicyDecision,
+    StateTransitionError, TaskSpec, TaskState, ValidationErrors,
 };
 
 use crate::{
@@ -123,6 +123,7 @@ pub struct TaskSnapshot {
 pub struct TaskExecutionInput {
     goal: String,
     capability_tools: Vec<String>,
+    network_destinations: Vec<NetworkDestination>,
 }
 
 impl TaskExecutionInput {
@@ -134,6 +135,11 @@ impl TaskExecutionInput {
     #[must_use]
     pub fn capability_tools(&self) -> &[String] {
         &self.capability_tools
+    }
+
+    #[must_use]
+    pub fn network_destinations(&self) -> &[NetworkDestination] {
+        &self.network_destinations
     }
 }
 
@@ -460,10 +466,15 @@ impl<S: EventStore> TaskSupervisor<S> {
             .ok_or(SupervisorError::TaskNotFound)?;
         let goal = record.spec.goal.clone();
         let capability_tools = record.spec.capabilities.tools.clone();
+        let network_destinations = match &record.spec.capabilities.network {
+            NetworkPolicy::Deny => Vec::new(),
+            NetworkPolicy::Allow { destinations } => destinations.clone(),
+        };
         self.start(task_id)?;
         Ok(TaskExecutionInput {
             goal,
             capability_tools,
+            network_destinations,
         })
     }
 
@@ -1023,6 +1034,27 @@ mod tests {
         assert!(
             context.remaining_wall_time() <= Duration::from_secs(expected_budget.wall_time_seconds)
         );
+    }
+
+    #[test]
+    fn start_execution_releases_validated_network_destinations() {
+        let mut supervisor = TaskSupervisor::default();
+        let mut spec = valid_task();
+        let expected = vec![NetworkDestination {
+            host: "127.0.0.1".to_owned(),
+            transport: NetworkTransport::Tcp,
+            port: 443,
+        }];
+        spec.capabilities.network = NetworkPolicy::Allow {
+            destinations: expected.clone(),
+        };
+        let task_id = accepted_task_id(supervisor.submit(spec).expect("submit task"));
+
+        let input = supervisor
+            .start_execution(task_id)
+            .expect("start task execution");
+
+        assert!(input.network_destinations() == expected);
     }
 
     #[test]

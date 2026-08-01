@@ -43,6 +43,7 @@ Run Tasks safely on one Linux device.
 - [x] Descriptor-relative Linux create-new writes behind exact Filesystem Capabilities.
 - [x] IP-bound bounded TCP exchanges behind exact Network Capabilities.
 - [x] Bounded Task-scoped Model Adapter contract and deterministic Agent execution path.
+- [x] Agent-routed bounded TCP exchanges through the exact Network Capability, approval, and Budget gates.
 - [ ] Principal-separated approval API.
 - [ ] Operating-system enforcement and isolation adapters for filesystem, network, and out-of-process Tools.
 - [ ] One local model adapter.

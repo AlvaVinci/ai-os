@@ -26,7 +26,7 @@ Each pending request is bound to:
 
 `ApprovalGrant` does not implement `Clone`, `Debug`, or serialization. Its `authorize` method takes ownership of the grant, so every attempt consumes it. A wrong Task, Operation, or action fails with `ScopeMismatch`; an expired grant fails with `Expired`. Neither failure returns the grant.
 
-The supervisor binds the Operation ID to the capability request, while `ExecutionGate` privately retains the complete adapter operation, including arguments that are intentionally absent from audit events. Resource adapter facades also attach the running Task's original non-serializable execution context before authorization, so approval cannot reset its wall-time Budget. Model output must not select or reuse an Operation ID. The gate does not accept a replacement operation after approval, and every execution attempt removes the retained value.
+The supervisor binds the Operation ID to the capability request, while `ExecutionGate` privately retains the complete adapter operation, including arguments that are intentionally absent from audit events. Resource adapter facades also attach the running Task's original non-serializable execution context before authorization, so approval cannot reset its wall-time Budget. The Agent additionally retains which private gate owns its one pending Tool or Network operation and dispatches approval only to that gate. Model output must not select or reuse an Operation ID. The gate does not accept a replacement operation after approval, and every execution attempt removes the retained value.
 
 ## Bounds and expiration
 
@@ -58,4 +58,4 @@ Denial, cancellation, and expiration remove retained operations. Audit failure d
 
 - define a principal-separated future local API for request, approval, and denial;
 - keep v0.1 restart recovery non-resumable; any later authority restoration requires a new encrypted and replay-safe design;
-- integrate the narrow Filesystem and Network Adapters into Agent routing and complete out-of-process Tool and model adapters behind `ExecutionGate`.
+- integrate the narrow Filesystem Adapter into Agent routing and complete out-of-process Tool and model adapters behind `ExecutionGate`; the IP-only Network path is now connected.

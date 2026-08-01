@@ -27,5 +27,6 @@ Index:
 - [ADR-0014: Enforce write-only Capabilities with create-new filesystem operations](0014-create-new-write-filesystem-adapter.md)
 - [ADR-0015: Bind the first Network Adapter to explicit IP destinations](0015-ip-bound-tcp-network-adapter.md)
 - [ADR-0016: Bind resource adapters to the original Task wall-time](0016-bind-resource-adapters-to-task-wall-time.md)
+- [ADR-0017: Route Agent network proposals through the Network gate](0017-route-agent-network-proposals-through-network-gate.md)
 
 New ADRs should state context, decision, consequences, alternatives, and related security requirements. Existing ADRs are immutable except for status and supersession links; changed decisions receive a new record.
