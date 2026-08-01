@@ -112,7 +112,7 @@ Implemented:
 - guarded adapter execution with complete-operation retention across approval
 - bounded Task-scoped Model Adapter and session contracts
 - deterministic scripted Model Adapter for conformance tests
-- synchronous single-Task Agent execution with bounded model turns and approval-aware Tool routing
+- synchronous single-Task Agent execution with bounded model turns and approval-aware Tool and IP-bound Network routing
 - bounded in-process Tool Catalog and Handler adapter without shell execution
 - bounded child-process Tool handler with explicit executable identity, argument policy, clean environment, and direct-child timeout
 - experimental Linux descriptor-relative create-new Filesystem Adapter with exact write Capability and approval enforcement

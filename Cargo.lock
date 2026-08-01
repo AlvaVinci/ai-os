@@ -43,6 +43,7 @@ dependencies = [
 name = "aios-agent"
 version = "0.1.0"
 dependencies = [
+ "aios-adapter-network",
  "aios-adapter-tool",
  "aios-core",
  "aios-runtime",

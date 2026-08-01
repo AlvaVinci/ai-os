@@ -11,6 +11,7 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
+aios-adapter-network = { path = "../aios-adapter-network" }
 aios-adapter-tool = { path = "../aios-adapter-tool" }
 aios-core = { path = "../aios-core" }
 aios-runtime = { path = "../aios-runtime" }

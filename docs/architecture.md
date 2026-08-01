@@ -110,14 +110,14 @@ The gate is an in-process authorization boundary, not an operating-system sandbo
 
 ### Agent Runtime
 
-- Starts one Task-scoped model session from a validated goal and only the Tool routes granted to that Task.
-- Accepts only bounded final-output or Tool-call decisions.
-- Reconstructs every Tool operation through the trusted catalog before Capability evaluation.
+- Starts one Task-scoped model session from a validated goal, granted Tool routes, and supported exact Network destinations.
+- Accepts only bounded final-output, Tool-call, or direct TCP-exchange decisions.
+- Reconstructs every Tool and Network operation through its trusted catalog before Capability evaluation.
 - Bounds model turns and retains at most one active model session per runtime instance.
-- Retains a waiting session across approval and resumes it only after the exact retained operation executes.
-- Fails the Task on invalid decisions, unknown routes, model failures, Tool failures, and step exhaustion.
+- Retains a waiting session and owning adapter kind across approval and resumes it only after the exact retained operation executes.
+- Fails the Task on invalid decisions, unknown routes, model failures, adapter failures, and step exhaustion.
 
-The current `aios-agent` crate supplies a deterministic scripted Model Adapter for conformance tests. It does not perform inference and does not satisfy the real local model requirement. Model requests, decisions, outputs, and Task execution input omit debug and serialization implementations because they may contain sensitive values. See [Agent runtime and Model Adapter contract](agent-runtime.md).
+The Network path advertises only exact Task destinations accepted by the configured IP-only catalog. It never exposes the raw adapter or socket and maps typed Network Budget failure to the existing atomic Task failure Event. The current `aios-agent` crate supplies a deterministic scripted Model Adapter for conformance tests. It does not perform inference and does not satisfy the real local model requirement. Model requests, decisions, outputs, and Task execution input omit debug and serialization implementations because they may contain sensitive values. See [Agent runtime and Model Adapter contract](agent-runtime.md) and [ADR-0017](adr/0017-route-agent-network-proposals-through-network-gate.md).
 
 ### Tool Adapter
 
@@ -152,7 +152,7 @@ The adapter does not read, overwrite, append, rename, delete, create directories
 - Exposes neither the raw adapter nor a live socket.
 - Returns bounded untrusted response bytes with redacted failure categories.
 
-The adapter does not resolve hostnames, negotiate TLS, use proxies, follow redirects, listen, route an Agent operation, or grant network authority to a subprocess. Remote effects may occur before a later deadline or I/O failure and cannot be rolled back. See [Network adapter](network-adapter.md), [ADR-0015](adr/0015-ip-bound-tcp-network-adapter.md), and [ADR-0016](adr/0016-bind-resource-adapters-to-task-wall-time.md).
+The adapter does not resolve hostnames, negotiate TLS, use proxies, follow redirects, listen, or grant network authority to a subprocess. The Agent can route one bounded direct TCP proposal through this same private gate; remote effects may occur before a later deadline or I/O failure and cannot be rolled back. See [Network adapter](network-adapter.md), [ADR-0015](adr/0015-ip-bound-tcp-network-adapter.md), [ADR-0016](adr/0016-bind-resource-adapters-to-task-wall-time.md), and [ADR-0017](adr/0017-route-agent-network-proposals-through-network-gate.md).
 
 ### Process Adapter
 

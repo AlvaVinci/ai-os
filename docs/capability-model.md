@@ -119,7 +119,7 @@ A complete filesystem adapter must still:
 
 ### Network
 
-Current policy matches the requested TCP host and port. The experimental Network Adapter enforces a bounded IP-only subset: it retains the original Task execution context across approval, constructs one `SocketAddr` from an explicit IPv4 or IPv6 Capability destination, connects without DNS or proxy resolution, verifies the actual peer, transfers one bounded request and response within the remaining Task wall-time, and closes the socket without exposing it.
+Current policy matches the requested TCP host and port. The experimental Network Adapter enforces a bounded IP-only subset: it retains the original Task execution context across approval, constructs one `SocketAddr` from an explicit IPv4 or IPv6 Capability destination, connects without DNS or proxy resolution, verifies the actual peer, transfers one bounded request and response within the remaining Task wall-time, and closes the socket without exposing it. The Agent advertises only Task destinations accepted by this configured catalog and reconstructs every model proposal through the private Network gate; model output cannot add a destination or obtain socket authority.
 
 Hostname Capabilities remain policy-valid but fail closed in this adapter. A complete hostname or HTTPS adapter must additionally:
 
